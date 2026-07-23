@@ -4,6 +4,7 @@
 # touches, e.g. sinelaw/fresh/fresh).
 tap "jandedobbeleer/oh-my-posh", trusted: true
 tap "sinelaw/fresh", trusted: true
+tap "terraform-linters/tap", trusted: true   # tflint is no longer in homebrew-core
 
 # Core CLI Tools
 brew "bat"                        # Modern cat with syntax highlighting
@@ -43,7 +44,7 @@ brew "grpcurl"                    # gRPC command-line client
 # IaC / Security
 brew "terraform-docs"             # Terraform docs generator
 brew "tfenv"                      # Terraform version manager
-brew "tflint"                     # Terraform linter
+brew "terraform-linters/tap/tflint" # Terraform linter
 brew "checkov"                    # IaC security scanner
 brew "trivy"                      # Dependency/image scanner
 brew "semgrep"                    # Code scanning tool
