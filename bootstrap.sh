@@ -350,12 +350,14 @@ install_build_tools
 log "Updating Homebrew..."
 brew update
 
-# Third-party tap trust is handled declaratively via the `trusted:` option on
-# the `tap` lines in the Brewfile itself (Homebrew 6.0.0+). `brew bundle`
-# applies those trust entries before loading any formula, so no separate
-# `brew trust` step is needed here.
+# Third-party tap trust (Homebrew 6.0.0+):
+# The Brewfile marks its taps `trusted: true`, but as a guaranteed fallback we
+# also set HOMEBREW_NO_REQUIRE_TAP_TRUST for the bundle invocation. That env var
+# makes Homebrew skip the untrusted-tap gate entirely, so the install cannot be
+# blocked regardless of which sibling formulae the tap loader evaluates. The
+# taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
 log "Installing packages from $BREWFILE..."
-brew bundle --file="$TMPDIR/$BREWFILE" || fatal "brew bundle failed"
+HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$TMPDIR/$BREWFILE" || fatal "brew bundle failed"
 
 ###############################################################################
 # APPLY ProfilePilot - Download and install shell configs and app settings

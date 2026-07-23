@@ -1,7 +1,9 @@
-# Third-party taps must be trusted (Homebrew 6.0.0+). Trust only the specific
-# formula we install from each, per Homebrew's tap-trust guidance.
-tap "jandedobbeleer/oh-my-posh", trusted: { formula: "oh-my-posh" }
-tap "sinelaw/fresh", trusted: { formula: "fresh-editor" }
+# Third-party taps must be trusted (Homebrew 6.0.0+). `brew bundle` evaluates
+# every formula in a tap when it loads it, so we trust the whole tap rather
+# than a single formula (per-formula trust misses sibling formulae the loader
+# touches, e.g. sinelaw/fresh/fresh).
+tap "jandedobbeleer/oh-my-posh", trusted: true
+tap "sinelaw/fresh", trusted: true
 
 # Core CLI Tools
 brew "bat"                        # Modern cat with syntax highlighting
