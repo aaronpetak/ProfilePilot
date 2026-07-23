@@ -106,3 +106,6 @@ if ! shopt -oq posix; then
     . /etc/bash_completion
   fi
 fi
+
+# Homebrew
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"

@@ -76,17 +76,14 @@ download_brewfile() {
     curl -fsSL "$url" -o "$dest" || fatal "Failed to download $file from $url"
 }
 
-# Configure Homebrew PATH in shell configuration files and current session
-# This ensures brew is available in both interactive shells and scripts
+# Configure Homebrew PATH for the current session.
+# .bashrc/.zshrc are overwritten by apply_dotfiles, which already contains the
+# shellenv line; we only write to .profile here for non-interactive shells and
+# to keep brew available throughout the remainder of this script.
 # Args: $1 - path to brew executable (e.g., /opt/homebrew/bin/brew)
 setup_brew_path() {
     local brew_path="$1"
     local shellenv_cmd="eval \"\$($brew_path shellenv bash)\""
-
-    # Add shellenv to interactive shell rc files if they exist
-    for rc_file in .bashrc .zshrc; do
-        [[ -f "$HOME/$rc_file" ]] && { echo "" >> "$HOME/$rc_file"; echo "$shellenv_cmd" >> "$HOME/$rc_file"; }
-    done
 
     # Add to .profile for non-interactive shells
     echo "$shellenv_cmd" >> "$HOME/.profile"

@@ -134,6 +134,9 @@ if ! shopt -oq posix; then
   fi
 fi
 
+# Homebrew
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
+
 # Source .bash_environment for environment variables
 if [ -f ~/.bash_environment ]; then
     . ~/.bash_environment
