@@ -4,17 +4,15 @@ Backend configuration repository for the [ProfilePilot Bootstrap](https://gist.g
 
 This repository contains Homebrew package definitions (Brewfiles) and OS-specific shell configurations (dotfiles) that are automatically downloaded and applied by the bootstrap script when provisioning macOS or Linux systems.
 
-> **Fork note:** This fork adds Fedora 44 support. The bootstrap one-liner below references the upstream Gist, which points to the original repository. To use Fedora support, the bootstrap script must be updated to reference this fork (`aaronpetak/ProfilePilot`) instead of the upstream.
-
 ## Quick Start
 
 To bootstrap a fresh machine, run the one-liner:
 
 ```bash
-curl -fsSL -o /tmp/profile-pilot.sh https://gist.githubusercontent.com/bsakdol/3c959ca9341eed0ddb4fcaf0a41799b3/raw/profile-pilot.sh && bash /tmp/profile-pilot.sh
+curl -fsSL -o /tmp/profile-pilot.sh https://raw.githubusercontent.com/aaronpetak/ProfilePilot/main/bootstrap.sh && bash /tmp/profile-pilot.sh
 ```
 
-The script will detect your OS, prompt you to select a profile, and configure your system using files from this repository.
+The script will detect your OS (macOS, Ubuntu, or Fedora), prompt you to select a profile, and configure your system using files from this repository.
 
 ## Overview
 
@@ -198,6 +196,6 @@ To create a new profile (e.g., `profile-security`):
 
 ## Related Links
 
-- **Bootstrap Script Gist:** [https://gist.github.com/bsakdol/3c959ca9341eed0ddb4fcaf0a41799b3](https://gist.github.com/bsakdol/3c959ca9341eed0ddb4fcaf0a41799b3)
+- **Bootstrap Script:** [bootstrap.sh](https://github.com/aaronpetak/ProfilePilot/blob/main/bootstrap.sh)
 - **Homebrew:** [https://brew.sh](https://brew.sh)
 - **Oh My Posh (theme engine):** [https://ohmyposh.dev](https://ohmyposh.dev)
