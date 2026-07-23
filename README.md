@@ -4,6 +4,8 @@ Backend configuration repository for the [ProfilePilot Bootstrap](https://gist.g
 
 This repository contains Homebrew package definitions (Brewfiles) and OS-specific shell configurations (dotfiles) that are automatically downloaded and applied by the bootstrap script when provisioning macOS or Linux systems.
 
+> **Fork note:** This fork adds Fedora 44 support. The bootstrap one-liner below references the upstream Gist, which points to the original repository. To use Fedora support, the bootstrap script must be updated to reference this fork (`aaronpetak/ProfilePilot`) instead of the upstream.
+
 ## Quick Start
 
 To bootstrap a fresh machine, run the one-liner:
@@ -18,7 +20,7 @@ The script will detect your OS, prompt you to select a profile, and configure yo
 
 This repository is organized by:
 
-- **Operating System** (macOS, Ubuntu/Linux)
+- **Operating System** (macOS, Ubuntu/Linux, Fedora)
 - **Profile** (Developer, Minimal, Bastion)
 
 Each profile includes:
@@ -45,6 +47,14 @@ ProfilePilot/
 │   │   ├── .bash_aliases
 │   │   └── .bash_environment
 │   └── profile-minimal/       # Ubuntu Bash configs for minimal setup
+│       ├── .bashrc
+│       └── .bash_aliases
+├── fedora/
+│   ├── profile-developer/    # Fedora Bash configs for full dev environment
+│   │   ├── .bashrc
+│   │   ├── .bash_aliases
+│   │   └── .bash_environment
+│   └── profile-minimal/       # Fedora Bash configs for minimal setup
 │       ├── .bashrc
 │       └── .bash_aliases
 ├── universal/
@@ -77,6 +87,7 @@ Complete engineering workstation environment including:
 - `universal/brewfiles/Brewfile-developer`
 - `macos/profile-developer/` (Zsh configuration)
 - `ubuntu/profile-developer/` (Bash configuration)
+- `fedora/profile-developer/` (Bash configuration)
 - `universal/.gitconfig`, `.gitmessage`, `.poshthemes/`
 
 ### Minimal
@@ -92,6 +103,7 @@ Lightweight, essential-only setup for security-constrained or resource-limited s
 - `universal/brewfiles/Brewfile-minimal`
 - `macos/profile-minimal/` (Zsh configuration)
 - `ubuntu/profile-minimal/` (Bash configuration)
+- `fedora/profile-minimal/` (Bash configuration)
 
 ### Bastion
 
@@ -118,7 +130,8 @@ The bootstrap script (`profile-pilot.sh` in the Gist) performs these steps:
 - **All Brewfiles** are designed to be cross-platform (macOS and Linux)
 - **Shell configurations** are OS-specific:
   - macOS uses Zsh (`.zprofile`, `.zshrc`, `.zsh_aliases`)
-  - Linux uses Bash (`.bashrc`, `.bash_aliases`, `.bash_environment`)
+  - Ubuntu uses Bash (`.bashrc`, `.bash_aliases`, `.bash_environment`)
+  - Fedora uses Bash (`.bashrc`, `.bash_aliases`, `.bash_environment`) — same structure as Ubuntu but without Debian-specific prompt logic (`debian_chroot`), the Ubuntu `lesspipe` call, and WSL-specific environment exports
 - **Universal dotfiles** (git config, themes) are applied only for the Developer profile
 
 ## Post-Bootstrap Customization
@@ -161,7 +174,8 @@ Edit the appropriate Brewfile in `universal/brewfiles/`:
 Edit dotfiles in the respective profile directories:
 
 - **macOS:** `macos/profile-{developer,minimal}/.z*`
-- **Linux:** `ubuntu/profile-{developer,minimal}/.bash*`
+- **Ubuntu:** `ubuntu/profile-{developer,minimal}/.bash*`
+- **Fedora:** `fedora/profile-{developer,minimal}/.bash*`
 
 Changes are applied the next time the bootstrap script is run.
 
@@ -172,7 +186,8 @@ To create a new profile (e.g., `profile-security`):
 1. Create `universal/brewfiles/Brewfile-security`
 2. Create `macos/profile-security/` with `.zprofile`, `.zshrc`, `.zsh_aliases`
 3. Create `ubuntu/profile-security/` with `.bashrc`, `.bash_aliases`
-4. Update the bootstrap script in the Gist to include the new profile option
+4. Create `fedora/profile-security/` with `.bashrc`, `.bash_aliases`
+5. Update the bootstrap script in the Gist to include the new profile option
 
 ## Notes
 
