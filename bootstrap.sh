@@ -350,16 +350,10 @@ install_build_tools
 log "Updating Homebrew..."
 brew update
 
-# Tap and trust all third-party taps declared in the Brewfile before running
-# bundle. Homebrew's tap trust feature blocks formula installation from
-# untrusted taps. We must tap first (so the tap exists on disk) and then
-# trust, otherwise 'brew trust' silently does nothing.
-log "Tapping and trusting taps in $BREWFILE..."
-while IFS= read -r tap; do
-    brew tap "$tap" 2>/dev/null || true
-    brew trust "$tap" 2>/dev/null && log "Trusted tap: $tap" || log "Note: could not trust tap: $tap"
-done < <(grep -E '^tap ' "$TMPDIR/$BREWFILE" | awk '{print $2}' | tr -d '"')
-
+# Third-party tap trust is handled declaratively via the `trusted:` option on
+# the `tap` lines in the Brewfile itself (Homebrew 6.0.0+). `brew bundle`
+# applies those trust entries before loading any formula, so no separate
+# `brew trust` step is needed here.
 log "Installing packages from $BREWFILE..."
 brew bundle --file="$TMPDIR/$BREWFILE" || fatal "brew bundle failed"
 

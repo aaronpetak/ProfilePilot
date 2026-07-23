@@ -1,5 +1,7 @@
-tap "jandedobbeleer/oh-my-posh"   # Theme engine for prompt styling
-tap "sinelaw/fresh"               # Fresh text editor tap
+# Third-party taps must be trusted (Homebrew 6.0.0+). Trust only the specific
+# formula we install from each, per Homebrew's tap-trust guidance.
+tap "jandedobbeleer/oh-my-posh", trusted: { formula: "oh-my-posh" }
+tap "sinelaw/fresh", trusted: { formula: "fresh-editor" }
 
 # Core CLI Tools
 brew "bat"                        # Modern cat with syntax highlighting
