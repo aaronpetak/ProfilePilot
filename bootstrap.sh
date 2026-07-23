@@ -158,6 +158,45 @@ install_build_tools() {
     fi
 }
 
+# Install tflint on Linux.
+# tflint is only published as a macOS cask in terraform-linters/tap, so on
+# Linux it cannot be installed via Homebrew. We download the official release
+# zip directly from GitHub (the same artifact the upstream install script uses)
+# and drop the binary into the Homebrew bin dir, which is already on PATH.
+# Note: we intentionally do NOT pipe the upstream install_linux.sh into bash —
+# it is unpinned and its maintainers have announced its removal on 2026-09-01.
+install_tflint_linux() {
+    if [[ "$OS_TYPE" != "linux" ]]; then
+        return
+    fi
+
+    if command -v tflint >/dev/null 2>&1; then
+        log "tflint already installed."
+        return
+    fi
+
+    local arch
+    case "$(uname -m)" in
+        x86_64)        arch="amd64" ;;
+        arm64|aarch64) arch="arm64" ;;
+        *) log "Note: unsupported architecture $(uname -m) for tflint; skipping."; return ;;
+    esac
+
+    local url="https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_${arch}.zip"
+    local dest_dir="$HOMEBREW_LINUX_PATH"
+    local tmp_zip="$TMPDIR/tflint.zip"
+
+    log "Installing tflint (linux_${arch}) from GitHub releases..."
+    if ! curl -fsSL -o "$tmp_zip" "$url"; then
+        log "Note: failed to download tflint from $url; skipping."
+        return
+    fi
+
+    unzip -o -q "$tmp_zip" -d "$TMPDIR/tflint" || { log "Note: failed to unzip tflint; skipping."; return; }
+    install -m 0755 "$TMPDIR/tflint/tflint" "$dest_dir/tflint" || { log "Note: failed to install tflint binary; skipping."; return; }
+    log "tflint installed to $dest_dir/tflint"
+}
+
 # Download all dotfiles for the selected profile and OS
 # Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/ubuntu/fedora)
 download_dotfiles() {
@@ -358,6 +397,12 @@ brew update
 # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
 log "Installing packages from $BREWFILE..."
 HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$TMPDIR/$BREWFILE" || fatal "brew bundle failed"
+
+# tflint is a macOS-only cask in Homebrew; install it separately on Linux for
+# the developer profile.
+if [[ "$BREWFILE" == "Brewfile-developer" ]]; then
+    install_tflint_linux
+fi
 
 ###############################################################################
 # APPLY ProfilePilot - Download and install shell configs and app settings
