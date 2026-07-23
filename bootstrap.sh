@@ -102,6 +102,18 @@ install_homebrew() {
         return
     fi
 
+    # Brew may be installed but not yet in PATH (e.g. re-run after a partial install).
+    # Skip the installer and just wire up the PATH.
+    if [[ -x "$HOMEBREW_LINUX_PATH/brew" ]]; then
+        log "Homebrew already installed, configuring PATH..."
+        setup_brew_path "$HOMEBREW_LINUX_PATH/brew"
+        return
+    elif [[ -x "$HOMEBREW_MACOS_PATH/brew" ]]; then
+        log "Homebrew already installed, configuring PATH..."
+        setup_brew_path "$HOMEBREW_MACOS_PATH/brew"
+        return
+    fi
+
     log "Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL "$HOMEBREW_INSTALL_URL")" ||
         fatal "Failed to install Homebrew from $HOMEBREW_INSTALL_URL"
