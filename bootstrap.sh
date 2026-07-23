@@ -129,7 +129,9 @@ install_build_tools() {
 
     if command -v dnf >/dev/null 2>&1; then
         # Fedora / RHEL / CentOS Stream
-        sudo dnf group install -y development-tools || fatal "Failed to install development-tools group"
+        # Try group install first; fall back to explicit packages if the group name differs across versions
+        sudo dnf group install -y development-tools 2>/dev/null || \
+            sudo dnf install -y gcc gcc-c++ make || fatal "Failed to install build tools via dnf"
         sudo dnf install -y bubblewrap || fatal "Failed to install bubblewrap"
     elif command -v apt-get >/dev/null 2>&1; then
         # Debian / Ubuntu
