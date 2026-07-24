@@ -229,6 +229,66 @@ install_tflint_linux() {
     log "tflint installed to $dest_dir/tflint"
 }
 
+# Install packages from a Brewfile, retrying transient failures and continuing
+# even if some packages ultimately fail.
+# Args: $1 - full path to the Brewfile
+#
+# Homebrew 6.x installs formulae in parallel, which occasionally produces
+# transient failures (a broken pipe on a download, or Cellar lock contention
+# between two formulae racing on the same dependency). These almost always
+# clear on the next attempt, and `brew bundle` is idempotent: a re-run skips
+# already-installed formulae ("Using x") and reattempts only the ones that
+# failed, so a short retry loop converges quickly.
+#
+# We deliberately do NOT fatal on persistent failure. `brew bundle` already
+# installs every dependency it can even when some fail, so the correct behavior
+# is to report the stragglers and continue to dotfiles/tflint/cleanup rather
+# than abort the whole run and force the user to start over.
+#
+# Tunable via env: BREW_BUNDLE_ATTEMPTS (default 3), BREW_BUNDLE_RETRY_DELAY
+# (seconds, default 5).
+install_brewfile_packages() {
+    local brewfile="$1"
+    local attempts="${BREW_BUNDLE_ATTEMPTS:-3}"
+    local delay="${BREW_BUNDLE_RETRY_DELAY:-5}"
+    local attempt=1
+
+    while (( attempt <= attempts )); do
+        log "Installing packages from $(basename "$brewfile") (attempt $attempt/$attempts)..."
+        # Third-party tap trust (Homebrew 6.0.0+): the Brewfile marks its taps
+        # trusted, but we also set HOMEBREW_NO_REQUIRE_TAP_TRUST as a guaranteed
+        # fallback so the untrusted-tap gate can never block the install. The
+        # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
+        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile"; then
+            log "All Brewfile dependencies installed successfully."
+            return 0
+        fi
+
+        log "Warning: brew bundle attempt $attempt/$attempts reported one or more failures."
+        attempt=$((attempt + 1))
+        if (( attempt <= attempts )); then
+            log "Retrying in ${delay}s (transient failures such as broken pipes and lock contention usually clear on retry)..."
+            sleep "$delay"
+        fi
+    done
+
+    # Retries exhausted. Report exactly what is still missing, then continue.
+    log "Warning: some Brewfile dependencies could not be installed after $attempts attempt(s)."
+    local missing
+    if missing=$(brew bundle check --file="$brewfile" --verbose 2>&1); then
+        # A recount says nothing is actually missing (e.g. the failures were
+        # non-package steps); treat as success.
+        log "Re-check reports all dependencies are present; continuing."
+    else
+        log "The following dependencies are still missing:"
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && log "  $line"
+        done <<< "$missing"
+        log "Continuing with remaining setup steps despite the missing packages above."
+    fi
+    return 0
+}
+
 # Download all dotfiles for the selected profile and OS
 # Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/linux)
 download_dotfiles() {
@@ -424,14 +484,10 @@ install_build_tools
 log "Updating Homebrew..."
 brew update
 
-# Third-party tap trust (Homebrew 6.0.0+):
-# The Brewfile marks its taps `trusted: true`, but as a guaranteed fallback we
-# also set HOMEBREW_NO_REQUIRE_TAP_TRUST for the bundle invocation. That env var
-# makes Homebrew skip the untrusted-tap gate entirely, so the install cannot be
-# blocked regardless of which sibling formulae the tap loader evaluates. The
-# taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
-log "Installing packages from $BREWFILE..."
-HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$TMPDIR/$BREWFILE" || fatal "brew bundle failed"
+# Install packages, retrying transient failures and continuing past any that
+# persist (see install_brewfile_packages). This intentionally never aborts the
+# run, so dotfiles, tflint, and cleanup still happen even if a package fails.
+install_brewfile_packages "$TMPDIR/$BREWFILE"
 
 # tflint is a macOS-only cask in Homebrew; install it separately on Linux for
 # the developer profile.
@@ -456,21 +512,18 @@ FORMULA_COUNT=$(brew list --formula | wc -l | tr -d ' ')
 CASK_COUNT=$(brew list --cask 2>/dev/null | wc -l | tr -d ' ')
 TOTAL_PKGS=$((FORMULA_COUNT + CASK_COUNT))
 
+# Cleanup runs automatically (no interactive prompt) so the script can complete
+# unattended. It removes any Homebrew package NOT listed in the selected
+# Brewfile. Set SKIP_CLEANUP=1 to opt out (useful when other Homebrew packages
+# on the machine should be preserved).
 if [[ "$TOTAL_PKGS" -eq 0 ]]; then
     log "No packages installed; cleanup unnecessary."
+elif [[ -n "${SKIP_CLEANUP:-}" ]]; then
+    log "SKIP_CLEANUP set; skipping removal of packages not listed in $BREWFILE."
 else
-    echo ""
-    echo "Homebrew currently has $TOTAL_PKGS installed package(s)."
-    echo "Cleanup will remove packages NOT listed in $BREWFILE."
-    echo ""
-    read -rp "Proceed with cleanup? (y/n): " yn < /dev/tty
-    if [[ "$yn" =~ ^[Yy]$ ]]; then
-        log "Performing cleanup..."
-        brew bundle cleanup --file="$TMPDIR/$BREWFILE" --force
-        log "Cleanup complete."
-    else
-        log "Cleanup skipped."
-    fi
+    log "Cleaning up: removing any packages not listed in $BREWFILE ($TOTAL_PKGS currently installed)..."
+    brew bundle cleanup --file="$TMPDIR/$BREWFILE" --force
+    log "Cleanup complete."
 fi
 
 ###############################################################################
