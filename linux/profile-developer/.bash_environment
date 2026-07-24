@@ -41,8 +41,12 @@ fi
 # TFenv: Terraform version management
 export PATH=$PATH:$HOME/.tfenv/bin
 
-# Browser Settings
-export BROWSER=/mnt/c/Program\ Files\ \(x86\)/Microsoft/Edge/Application/msedge.exe
+# Browser Settings (WSL only)
+# Point the browser at the Windows Edge binary when running under WSL. Guarded
+# so it no-ops on native Linux (Fedora/Ubuntu bare metal) where the path is absent.
+if [ -x "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" ]; then
+    export BROWSER="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+fi
 
 # Python UV
 # eval "$(uv generate-shell-completion bash)"
