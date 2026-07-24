@@ -5,20 +5,30 @@ eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
 export PROJECTS_HOME=$HOME/projects
 
 # Python Virtualenv
+# virtualenv and virtualenvwrapper are installed via Homebrew, so we let
+# virtualenvwrapper discover the virtualenv binary from PATH rather than
+# hardcoding a path. (VIRTUALENVWRAPPER_PYTHON still points at the system
+# python3, which virtualenvwrapper itself runs under.)
 export VIRTUALENVWRAPPER_PYTHON=/usr/bin/python3
-export VIRTUALENVWRAPPER_VIRTUALENV=/usr/bin/virtualenv
 export WORKON_HOME=$HOME/.virtualenvs
 
-source /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh
+# Guard the source so a shell doesn't error out if virtualenvwrapper isn't
+# installed (e.g. a partial bootstrap or the minimal profile).
+if [ -f /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh ]; then
+    source /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh
+fi
 
 # Poetry
 #export PATH=$PATH:$HOME/.poetry/bin
 
 # Golang Environment
-export GOROOT=/usr/local/go
+# Go is installed via Homebrew, which puts `go` on PATH and lets the toolchain
+# auto-detect GOROOT from the binary's location. Setting GOROOT manually to a
+# non-Homebrew path (e.g. /usr/local/go) breaks every `go` command, so we omit
+# it. GOPATH/GOBIN are our workspace dirs and stay.
 export GOPATH=$PROJECTS_HOME/go
 export GOBIN=$GOPATH/bin
-export PATH=$PATH:$GOROOT/bin:$GOBIN
+export PATH=$PATH:$GOBIN
 
 # oh-my-posh terminal prompt
 if [ -f /home/linuxbrew/.linuxbrew/bin/oh-my-posh ] && [ "$TERM_PROGRAM" != "vscode" ]; then

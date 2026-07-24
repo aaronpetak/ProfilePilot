@@ -129,6 +129,13 @@ install_build_tools() {
         return
     fi
 
+    # unzip is required to extract Homebrew casks and the tflint release zip.
+    # It is NOT preinstalled on Ubuntu 26+ (it was on 24). Ensure it regardless
+    # of whether the compiler toolchain is already present, so re-runs and
+    # systems that have gcc but not unzip still get it. bubblewrap is a Homebrew
+    # sandbox dependency and is ensured here too.
+    ensure_linux_packages unzip bubblewrap
+
     if command -v gcc >/dev/null 2>&1; then
         log "Build tools already installed."
         return
@@ -141,10 +148,8 @@ install_build_tools() {
         # Try group install first; fall back to explicit packages if the group name differs across versions
         sudo dnf group install -y development-tools 2>/dev/null || \
             sudo dnf install -y gcc gcc-c++ make || fatal "Failed to install build tools via dnf"
-        sudo dnf install -y bubblewrap || fatal "Failed to install bubblewrap"
     elif command -v apt-get >/dev/null 2>&1; then
         # Debian / Ubuntu
-        sudo apt-get update || true
         sudo apt-get install -y build-essential || fatal "Failed to install build-essential"
     else
         fatal "No supported package manager found (tried dnf, apt-get)"
@@ -152,6 +157,28 @@ install_build_tools() {
 
     if ! command -v gcc >/dev/null 2>&1; then
         fatal "GCC still not available after installing build tools"
+    fi
+}
+
+# Ensure one or more packages are installed on Linux via the distro package
+# manager. Skips any package whose command is already available.
+# Args: package names (assumed to match their provided command name)
+ensure_linux_packages() {
+    local missing=()
+    for pkg in "$@"; do
+        command -v "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    done
+
+    [[ ${#missing[@]} -eq 0 ]] && return
+
+    log "Installing Linux packages: ${missing[*]}"
+    if command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update || true
+        sudo apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+    else
+        fatal "No supported package manager found (tried dnf, apt-get)"
     fi
 }
 
