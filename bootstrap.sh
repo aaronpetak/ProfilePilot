@@ -16,13 +16,15 @@ HOMEBREW_LINUX_PATH="$HOMEBREW_LINUX_INSTALL_DIR/bin"   # Path to brew executabl
 HOMEBREW_MACOS_INSTALL_DIR="/opt/homebrew"              # Default macOS Homebrew path (Apple Silicon)
 HOMEBREW_MACOS_PATH="$HOMEBREW_MACOS_INSTALL_DIR/bin"   # Path to brew executable on macOS
 
-# Shell-specific dotfiles to download and apply
+# Shell-specific dotfiles to download and apply. Aliases live in the universal
+# .shell_aliases file (sourced by both shells), so they are NOT listed here.
 declare -A SHELL_FILES
-SHELL_FILES[bash]=".bashrc .bash_aliases .bash_environment"
-SHELL_FILES[zsh]=".zshrc .zsh_aliases .zprofile"
+SHELL_FILES[bash]=".bashrc .bash_environment"
+SHELL_FILES[zsh]=".zshrc .zprofile"
 
-# Universal dotfiles (applied to all profiles)
-UNIVERSAL_FILES=".gitconfig .gitmessage"
+# Universal dotfiles (applied to all profiles). .shell_aliases is sourced by
+# both bash and zsh; .gitconfig/.gitmessage are the shared git configuration.
+UNIVERSAL_FILES=".shell_aliases .gitconfig .gitmessage"
 
 # Profile-specific directories (only installed for specified profiles)
 declare -A PROFILE_SPECIFIC_DIRS
@@ -36,8 +38,10 @@ TMPDIR="/tmp/brew-bootstrap"
 rm -rf "$TMPDIR"
 mkdir -p "$TMPDIR"
 
-# Cleanup temp directory on exit
-trap "rm -rf \"$TMPDIR\"" EXIT
+# Cleanup temp directory on exit. Single-quoted so $TMPDIR is expanded when the
+# trap fires, not when it is defined (SC2064); TMPDIR is constant here either
+# way, but this is the correct form.
+trap 'rm -rf "$TMPDIR"' EXIT
 
 # Derived variables
 BREWFILES_URL="$DOTFILES_REPO/universal/brewfiles"
@@ -85,8 +89,12 @@ setup_brew_path() {
     local brew_path="$1"
     local shellenv_cmd="eval \"\$($brew_path shellenv bash)\""
 
-    # Add to .profile for non-interactive shells
-    echo "$shellenv_cmd" >> "$HOME/.profile"
+    # Add to .profile for non-interactive shells, but only once: this branch
+    # runs on every invocation where brew isn't yet on PATH, so an unguarded
+    # append would stack duplicate lines on repeated runs.
+    if ! grep -qsF "$shellenv_cmd" "$HOME/.profile"; then
+        echo "$shellenv_cmd" >> "$HOME/.profile"
+    fi
 
     # Update PATH in the current session so brew works immediately
     eval "$shellenv_cmd"
@@ -222,7 +230,7 @@ install_tflint_linux() {
 }
 
 # Download all dotfiles for the selected profile and OS
-# Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/ubuntu/fedora)
+# Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/linux)
 download_dotfiles() {
     local profile="$1"
     local os_dir="$2"
@@ -310,12 +318,22 @@ apply_item() {
 
     if [[ -e "$dest" ]]; then
         log "Backing up $(basename "$dest") to $(basename "$dest").bak"
-        [[ -d "$dest" ]] && mv "$dest" "${dest}.bak" || cp "$dest" "${dest}.bak"
+        # Use a real if/else: `A && B || C` would run C when B fails, clobbering
+        # the backup logic (SC2015).
+        if [[ -d "$dest" ]]; then
+            mv "$dest" "${dest}.bak"
+        else
+            cp "$dest" "${dest}.bak"
+        fi
     fi
 
     log "Installing $item_type $(basename "$src")"
-    [[ "$item_type" == "directory" ]] && mkdir -p "$(dirname "$dest")" || true
-    [[ "$item_type" == "directory" ]] && cp -r "$src" "$dest" || cp "$src" "$dest"
+    if [[ "$item_type" == "directory" ]]; then
+        mkdir -p "$(dirname "$dest")"
+        cp -r "$src" "$dest"
+    else
+        cp "$src" "$dest"
+    fi
 }
 
 # Install all downloaded files to the home directory
@@ -356,17 +374,10 @@ if [[ "$OSTYPE" == darwin* ]]; then
     OS_DOTFILES_DIR="macos"
 elif [[ "$OSTYPE" == linux-gnu* ]]; then
     OS_TYPE="linux"
-    # Detect specific Linux distro to select the right dotfiles directory
-    if [[ -f /etc/os-release ]]; then
-        # shellcheck source=/dev/null
-        source /etc/os-release
-        case "${ID:-}" in
-            fedora) OS_DOTFILES_DIR="fedora" ;;
-            *)      OS_DOTFILES_DIR="ubuntu" ;;
-        esac
-    else
-        OS_DOTFILES_DIR="ubuntu"
-    fi
+    # All Linux distros share a single dotfiles set. Distro-specific behavior
+    # (Debian chroot, lesspipe, WSL browser export) is guarded inside those
+    # files, so no per-distro directory is needed.
+    OS_DOTFILES_DIR="linux"
 else
     fatal "Unsupported OS: $OSTYPE"
 fi
