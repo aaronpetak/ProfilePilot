@@ -536,7 +536,23 @@ if [[ "$TOTAL_PKGS" -eq 0 ]]; then
 elif [[ -n "${SKIP_CLEANUP:-}" ]]; then
     log "SKIP_CLEANUP set; skipping removal of packages not listed in $BREWFILE."
 else
-    log "Cleaning up: removing any packages not listed in $BREWFILE ($TOTAL_PKGS currently installed)..."
+    log "Checking for packages not listed in $BREWFILE ($TOTAL_PKGS currently installed)..."
+
+    # Without --force, `brew bundle cleanup` only lists what it would remove
+    # and doesn't touch anything. On a machine that predates ProfilePilot,
+    # that removal list can include tools installed manually or by a previous
+    # setup that simply aren't part of the selected profile, so log the
+    # preview before the destructive pass rather than removing them silently.
+    CLEANUP_PREVIEW=$(brew bundle cleanup --file="$TMPDIR/$BREWFILE" 2>&1) || true
+    if [[ -n "$CLEANUP_PREVIEW" ]]; then
+        log "The following will be removed because they are not listed in $BREWFILE:"
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && log "  $line"
+        done <<< "$CLEANUP_PREVIEW"
+        log "Set SKIP_CLEANUP=1 and re-run this script if you want to keep these instead."
+    fi
+
+    log "Cleaning up: removing any packages not listed in $BREWFILE..."
     brew bundle cleanup --file="$TMPDIR/$BREWFILE" --force
     log "Cleanup complete."
 fi
