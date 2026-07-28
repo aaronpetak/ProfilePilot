@@ -108,8 +108,39 @@ The bootstrap script (`bootstrap.sh`) performs these steps:
 2. **Homebrew Installation** - Installs Homebrew if not present
 3. **Profile Selection** - Prompts user to choose Developer or Minimal
 4. **Package Installation** - Downloads and executes the selected Brewfile from `universal/brewfiles/`
-5. **Dotfiles Application** - Downloads and applies OS and profile-specific dotfiles
+5. **Dotfiles Application** - Downloads and applies OS and profile-specific dotfiles (see [Existing Dotfiles & Backups](#existing-dotfiles--backups) for how conflicts with files you already have are handled)
 6. **Cleanup (Optional)** - Prompts to remove packages not in the selected profile
+
+### Existing Dotfiles & Backups
+
+On a fresh machine the profile's dotfiles are simply installed. On a machine you've already customized, the script does **not** blindly overwrite what you have. For each dotfile it compares your version against the profile version and acts as follows:
+
+- **File doesn't exist yet** → installed silently.
+- **File is identical** to the profile version → left untouched, no backup made.
+- **File exists but differs** → treated as a *conflict* and resolved according to the mode below.
+
+When conflicts are found, the script lists them and (on an interactive terminal) asks once how to proceed:
+
+- **`[O]` Overwrite all** — install the profile versions; your originals are backed up first.
+- **`[S]` Skip all** — keep your existing files; install none of the conflicting ones.
+- **`[D]` Decide per file** — for each conflict, choose overwrite / skip / view a diff of your version vs. the profile version.
+
+Backups are written **in place** with a per-run timestamp, e.g. `~/.zshrc.bak.20260728-145900`. Because the timestamp is unique per run, re-running the script never overwrites an earlier backup.
+
+You can control this non-interactively with the `DOTFILES_CONFLICT` environment variable:
+
+```bash
+# Replace differing dotfiles (originals are still backed up)
+DOTFILES_CONFLICT=overwrite bash bootstrap.sh
+
+# Never touch existing dotfiles (only install ones you don't have)
+DOTFILES_CONFLICT=skip bash bootstrap.sh
+
+# Force the interactive prompt
+DOTFILES_CONFLICT=prompt bash bootstrap.sh
+```
+
+If no terminal is available (e.g. CI or a container) and `DOTFILES_CONFLICT` is unset, the script defaults to **skip** — it will never silently replace an existing file unattended. Set `DOTFILES_CONFLICT=overwrite` in automation that should always apply the latest dotfiles.
 
 ### Cross-Platform Compatibility
 
@@ -180,7 +211,7 @@ To create a new profile (e.g., `profile-security`):
 ## Notes
 
 - Missing dotfiles in a profile are logged as informational notes but do not cause installation failures
-- The bootstrap script is idempotent—running it multiple times is safe
+- The bootstrap script is idempotent—running it multiple times is safe; unchanged dotfiles are detected and left alone, and each run's backups carry a unique timestamp so they never clobber one another
 - Homebrew packages are **not** version-pinned; each run installs the current version from the tap. Add a `@version` suffix in the Brewfile if you need to pin a specific release.
 - The Oh My Posh prompt theme (`.poshthemes/`) is downloaded only for the Developer profile
 
