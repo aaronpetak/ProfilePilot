@@ -18,17 +18,28 @@ HOMEBREW_MACOS_PATH="$HOMEBREW_MACOS_INSTALL_DIR/bin"   # Path to brew executabl
 
 # Shell-specific dotfiles to download and apply. Aliases live in the universal
 # .shell_aliases file (sourced by both shells), so they are NOT listed here.
-declare -A SHELL_FILES
-SHELL_FILES[bash]=".bashrc .bash_environment"
-SHELL_FILES[zsh]=".zshrc .zprofile"
+#
+# NOTE: These lookups are implemented as functions (not associative arrays,
+# i.e. `declare -A`) because this script must run on macOS's stock /bin/bash
+# (3.2, the last GPLv2 release) before Homebrew's newer bash is available.
+# Associative arrays and `[[ -v arr[key] ]]` both require bash 4+.
+shell_files_for() {
+    case "$1" in
+        bash) echo ".bashrc .bash_environment" ;;
+        zsh)  echo ".zshrc .zprofile" ;;
+    esac
+}
 
 # Universal dotfiles (applied to all profiles). .shell_aliases is sourced by
 # both bash and zsh; .gitconfig/.gitmessage are the shared git configuration.
 UNIVERSAL_FILES=".shell_aliases .gitconfig .gitmessage"
 
 # Profile-specific directories (only installed for specified profiles)
-declare -A PROFILE_SPECIFIC_DIRS
-PROFILE_SPECIFIC_DIRS[profile-developer]=".poshthemes"
+profile_specific_dirs_for() {
+    case "$1" in
+        profile-developer) echo ".poshthemes" ;;
+    esac
+}
 
 ###############################################################################
 # CONFIGURATION
@@ -300,7 +311,7 @@ download_dotfiles() {
     mkdir -p "$dotfiles_dir"
 
     local shell_type="${SHELL##*/}"
-    for file in ${SHELL_FILES[$shell_type]}; do
+    for file in $(shell_files_for "$shell_type"); do
         local file_url="$DOTFILES_REPO/$os_dir/$profile/$file"
         local dest="$dotfiles_dir/$file"
         log "Downloading $file from $os_dir/$profile"
@@ -314,8 +325,10 @@ download_dotfiles() {
         curl -fsSL "$file_url" -o "$dest" 2>/dev/null || log "Note: $file not found in universal (optional)"
     done
 
-    if [[ -v PROFILE_SPECIFIC_DIRS[$profile] ]]; then
-        for dir in ${PROFILE_SPECIFIC_DIRS[$profile]}; do
+    local profile_dirs
+    profile_dirs="$(profile_specific_dirs_for "$profile")"
+    if [[ -n "$profile_dirs" ]]; then
+        for dir in $profile_dirs; do
             log "Downloading $dir"
             download_universal_directory "$dir" "$dotfiles_dir"
         done
@@ -408,7 +421,7 @@ apply_dotfiles() {
 
     log "Applying profile files for $shell_type shell..."
 
-    for file in ${SHELL_FILES[$shell_type]}; do
+    for file in $(shell_files_for "$shell_type"); do
         apply_item "$profile_dir/$file" "$HOME/$file"
     done
 
@@ -416,8 +429,10 @@ apply_dotfiles() {
         apply_item "$profile_dir/$file" "$HOME/$file"
     done
 
-    if [[ -v PROFILE_SPECIFIC_DIRS[$profile] ]]; then
-        for dir in ${PROFILE_SPECIFIC_DIRS[$profile]}; do
+    local profile_dirs
+    profile_dirs="$(profile_specific_dirs_for "$profile")"
+    if [[ -n "$profile_dirs" ]]; then
+        for dir in $profile_dirs; do
             apply_item "$profile_dir/$dir" "$HOME/$dir"
         done
     fi
