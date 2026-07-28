@@ -263,6 +263,12 @@ install_brewfile_packages() {
     local attempts="${BREW_BUNDLE_ATTEMPTS:-3}"
     local delay="${BREW_BUNDLE_RETRY_DELAY:-5}"
     local attempt=1
+    # Captures every attempt's combined output so we can scan it for known
+    # non-transient failure patterns (see the link-conflict check below) once
+    # retries are exhausted. `tee` still streams output to the terminal live,
+    # so this doesn't change what the user sees during the run.
+    local bundle_log="$TMPDIR/brew-bundle-output.log"
+    : > "$bundle_log"
 
     while (( attempt <= attempts )); do
         log "Installing packages from $(basename "$brewfile") (attempt $attempt/$attempts)..."
@@ -270,7 +276,7 @@ install_brewfile_packages() {
         # trusted, but we also set HOMEBREW_NO_REQUIRE_TAP_TRUST as a guaranteed
         # fallback so the untrusted-tap gate can never block the install. The
         # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
-        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile"; then
+        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile" 2>&1 | tee -a "$bundle_log"; then
             log "All Brewfile dependencies installed successfully."
             return 0
         fi
@@ -297,6 +303,17 @@ install_brewfile_packages() {
         done <<< "$missing"
         log "Continuing with remaining setup steps despite the missing packages above."
     fi
+
+    # A `brew link` conflict (a file with the same name already exists outside
+    # Homebrew's management — e.g. an npm-global install, a manual copy, or a
+    # leftover from a previous partial install) is not transient and will fail
+    # identically on every retry, unlike broken pipes or lock contention. Flag
+    # it explicitly so the user doesn't waste time re-running the script.
+    if grep -q "already exists\." "$bundle_log" 2>/dev/null; then
+        log "Note: one or more failures above look like a 'brew link' conflict (a file already exists outside Homebrew's management) rather than a transient error. Re-running this script will not fix that on its own."
+        log "  Look above for lines containing 'already exists' and 'Could not symlink' to identify the conflicting path and formula, then either remove the conflicting file (if safe to do so) or run: brew link --overwrite <formula>"
+    fi
+
     return 0
 }
 
