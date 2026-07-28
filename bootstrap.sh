@@ -240,6 +240,54 @@ install_tflint_linux() {
     log "tflint installed to $dest_dir/tflint"
 }
 
+# Given the "still missing" report from `brew bundle check --verbose`, tell
+# apart two very different reasons a formula shows up as missing:
+#
+#   1. It genuinely isn't installed (a download/tap/network failure) — retrying
+#      the bundle is the right move, which the caller already did.
+#   2. Its keg IS installed but couldn't be *linked*, so `brew bundle` reports
+#      it missing even though the software is on disk. This happens when a file
+#      from outside Homebrew (commonly a global npm install, or a manual copy)
+#      already occupies the formula's binary path. This is the "overlap" case:
+#      it is NOT transient and no amount of retrying fixes it.
+#
+# For every missing formula whose keg is actually installed, we resolve case 2:
+# a plain `brew link` (which never overwrites foreign files) fixes a benign
+# unlinked keg automatically; if a real conflict blocks it, we name the exact
+# overlapping formula and path and print the precise `brew link --overwrite`
+# command to run. `brew list`/`brew link` accept the tap-qualified name that
+# the check report prints, so no alias resolution is needed here.
+# Args: $1 - the missing-dependencies report captured from `brew bundle check`
+resolve_unlinked_formulae() {
+    local missing_report="$1"
+    local formula link_out conflict_path
+
+    # Lines look like: "→ Formula sinelaw/fresh/fresh needs to be installed or updated."
+    while IFS= read -r formula; do
+        [[ -z "$formula" ]] && continue
+
+        # Only kegs that are actually installed are overlap candidates; a
+        # genuinely-missing formula falls through to the caller's generic note.
+        if ! brew list --formula --versions "$formula" >/dev/null 2>&1; then
+            continue
+        fi
+
+        log "Overlap detected: Homebrew formula '$formula' is installed but not linked, so brew bundle keeps reporting it as missing."
+        # Plain `brew link` is safe — it refuses to clobber files it doesn't
+        # own — so it transparently fixes a keg that is merely unlinked.
+        if link_out=$(brew link "$formula" 2>&1); then
+            log "  Fixed automatically: linked '$formula' (it was installed but unlinked)."
+        else
+            # Linking is blocked by a pre-existing file from another source.
+            conflict_path=$(printf '%s\n' "$link_out" | awk '/^Target /{print $2; exit}')
+            log "  '$formula' cannot be linked because another file already owns its path${conflict_path:+: $conflict_path}."
+            log "  That file was almost certainly installed outside Homebrew (e.g. a global npm package that ships the same command)."
+            log "  Recommended fix: brew link --overwrite $formula"
+            log "  (Preview what that would replace first with: brew link --overwrite $formula --dry-run)"
+        fi
+    done < <(printf '%s\n' "$missing_report" | sed -n 's/.*Formula \([^ ]*\) needs.*/\1/p')
+}
+
 # Install packages from a Brewfile, retrying transient failures and continuing
 # even if some packages ultimately fail.
 # Args: $1 - full path to the Brewfile
@@ -263,12 +311,6 @@ install_brewfile_packages() {
     local attempts="${BREW_BUNDLE_ATTEMPTS:-3}"
     local delay="${BREW_BUNDLE_RETRY_DELAY:-5}"
     local attempt=1
-    # Captures every attempt's combined output so we can scan it for known
-    # non-transient failure patterns (see the link-conflict check below) once
-    # retries are exhausted. `tee` still streams output to the terminal live,
-    # so this doesn't change what the user sees during the run.
-    local bundle_log="$TMPDIR/brew-bundle-output.log"
-    : > "$bundle_log"
 
     while (( attempt <= attempts )); do
         log "Installing packages from $(basename "$brewfile") (attempt $attempt/$attempts)..."
@@ -276,7 +318,7 @@ install_brewfile_packages() {
         # trusted, but we also set HOMEBREW_NO_REQUIRE_TAP_TRUST as a guaranteed
         # fallback so the untrusted-tap gate can never block the install. The
         # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
-        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile" 2>&1 | tee -a "$bundle_log"; then
+        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile" 2>&1; then
             log "All Brewfile dependencies installed successfully."
             return 0
         fi
@@ -302,16 +344,13 @@ install_brewfile_packages() {
             [[ -n "$line" ]] && log "  $line"
         done <<< "$missing"
         log "Continuing with remaining setup steps despite the missing packages above."
-    fi
 
-    # A `brew link` conflict (a file with the same name already exists outside
-    # Homebrew's management — e.g. an npm-global install, a manual copy, or a
-    # leftover from a previous partial install) is not transient and will fail
-    # identically on every retry, unlike broken pipes or lock contention. Flag
-    # it explicitly so the user doesn't waste time re-running the script.
-    if grep -q "already exists\." "$bundle_log" 2>/dev/null; then
-        log "Note: one or more failures above look like a 'brew link' conflict (a file already exists outside Homebrew's management) rather than a transient error. Re-running this script will not fix that on its own."
-        log "  Look above for lines containing 'already exists' and 'Could not symlink' to identify the conflicting path and formula, then either remove the conflicting file (if safe to do so) or run: brew link --overwrite <formula>"
+        # Some of those "missing" formulae may actually be installed but
+        # unlinked because another install (e.g. a global npm package) owns
+        # their binary path. That is not transient and retrying never helps, so
+        # resolve it here: auto-link the benign cases and print an exact
+        # `brew link --overwrite` recommendation for genuine path conflicts.
+        resolve_unlinked_formulae "$missing"
     fi
 
     return 0

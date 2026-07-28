@@ -14,7 +14,7 @@ brew "git"                        # Version control
 brew "gh"                         # GitHub CLI
 brew "htop"                       # Interactive process monitor
 brew "jq"                         # JSON processor
-brew "sinelaw/fresh/fresh-editor" # Fresh terminal text editor
+brew "sinelaw/fresh/fresh"        # Fresh terminal text editor (fresh-editor is an alias brew bundle can't resolve)
 brew "ripgrep"                    # Fast search utility
 brew "tmux"                       # Terminal multiplexer
 brew "tree"                       # Directory tree viewer
