@@ -57,6 +57,19 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # Derived variables
 BREWFILES_URL="$DOTFILES_REPO/universal/brewfiles"
 
+# Single timestamp for this run, reused for every dotfile backup so that all
+# of a run's backups share one suffix (e.g. .zshrc.bak.20260728-145900) and a
+# re-run never overwrites a previous run's backup.
+RUN_TS="$(date +%Y%m%d-%H%M%S)"
+
+# How to handle an existing dotfile that differs from the profile version:
+#   overwrite - back it up, then install the profile version
+#   skip      - keep the existing file, don't install the profile version
+#   prompt    - ask interactively (requires a TTY)
+# Unset means: prompt when a TTY is available, otherwise skip. Files that don't
+# exist yet are always installed; files identical to the profile are left alone.
+DOTFILES_CONFLICT="${DOTFILES_CONFLICT:-}"
+
 if [[ "$OSTYPE" == darwin* ]]; then
     LOGDIR="$HOME/Library/Logs"
 else
@@ -430,42 +443,149 @@ download_universal_directory() {
     rm -rf "$temp_extract"
 }
 
-# Install a file or directory to the home directory, backing up any existing version
-# Args: $1 - source path, $2 - destination path
-apply_item() {
-    local src="$1"
-    local dest="$2"
-    local item_type
-
-    if [[ -f "$src" ]]; then
-        item_type="file"
-    elif [[ -d "$src" ]]; then
-        item_type="directory"
+# Return 0 if a source file/dir is byte-for-byte identical to an existing
+# destination, 1 otherwise. A file-vs-directory type mismatch counts as
+# differing. Used to skip files the user already has in the exact profile form.
+items_identical() {
+    local src="$1" dest="$2"
+    if [[ -f "$src" && -f "$dest" ]]; then
+        cmp -s "$src" "$dest"
+    elif [[ -d "$src" && -d "$dest" ]]; then
+        diff -rq "$src" "$dest" >/dev/null 2>&1
     else
-        return
+        return 1
     fi
+}
 
-    if [[ -e "$dest" ]]; then
-        log "Backing up $(basename "$dest") to $(basename "$dest").bak"
-        # Use a real if/else: `A && B || C` would run C when B fails, clobbering
-        # the backup logic (SC2015).
-        if [[ -d "$dest" ]]; then
-            mv "$dest" "${dest}.bak"
-        else
-            cp "$dest" "${dest}.bak"
-        fi
-    fi
-
-    log "Installing $item_type $(basename "$src")"
-    if [[ "$item_type" == "directory" ]]; then
+# Copy a source file or directory to dest. Assumes dest does not already exist
+# (callers handle backups first). Args: $1 - source, $2 - destination.
+install_item() {
+    local src="$1" dest="$2"
+    if [[ -d "$src" ]]; then
+        log "Installing directory $(basename "$src")"
         mkdir -p "$(dirname "$dest")"
         cp -r "$src" "$dest"
     else
+        log "Installing file $(basename "$src")"
         cp "$src" "$dest"
     fi
 }
 
-# Install all downloaded files to the home directory
+# Back up an existing dotfile/dir to <name>.bak.<RUN_TS>, then install the
+# profile version over it. The timestamped suffix means a re-run never clobbers
+# a previous backup. Args: $1 - source, $2 - destination.
+backup_and_install() {
+    local src="$1" dest="$2"
+    local backup="${dest}.bak.${RUN_TS}"
+    log "Backing up $(basename "$dest") to $(basename "$backup")"
+    mv "$dest" "$backup"
+    install_item "$src" "$dest"
+}
+
+# Resolve the conflict-handling mode into the global CONFLICT_MODE
+# (overwrite|skip|perfile). Honors $DOTFILES_CONFLICT; otherwise prompts when a
+# TTY is available and defaults to skip when it is not. Sets a global rather
+# than echoing so it can use log() freely without polluting a captured result.
+CONFLICT_MODE=""
+determine_conflict_mode() {
+    CONFLICT_MODE=""
+    case "$DOTFILES_CONFLICT" in
+        overwrite) CONFLICT_MODE="overwrite"; return ;;
+        skip)      CONFLICT_MODE="skip"; return ;;
+        prompt)    ;;  # fall through to the interactive prompt below
+        "")        ;;  # no preference; prompt if we can, else skip
+        *)         log "Warning: ignoring unknown DOTFILES_CONFLICT='$DOTFILES_CONFLICT' (expected overwrite|skip|prompt)." ;;
+    esac
+
+    # Prompting needs a readable controlling terminal (works under `curl | bash`
+    # via /dev/tty, but not in CI/containers that have none).
+    if [[ ! -r /dev/tty ]]; then
+        if [[ "$DOTFILES_CONFLICT" == "prompt" ]]; then
+            log "DOTFILES_CONFLICT=prompt was set but no interactive terminal is available; keeping existing files."
+        else
+            log "No interactive terminal available; keeping existing files. Re-run with DOTFILES_CONFLICT=overwrite to replace them (originals are backed up)."
+        fi
+        CONFLICT_MODE="skip"
+        return
+    fi
+
+    {
+        echo ""
+        echo "How should the differing files above be handled?"
+        echo "  [O] Overwrite all - install the profile versions (originals backed up as <name>.bak.$RUN_TS)"
+        echo "  [S] Skip all      - keep your existing files, install none of these"
+        echo "  [D] Decide per file"
+    } > /dev/tty
+    local choice
+    read -rp "Choose [O/S/D]: " choice < /dev/tty
+    case "$(printf '%s' "${choice:-}" | tr 'A-Z' 'a-z')" in
+        o) CONFLICT_MODE="overwrite" ;;
+        d) CONFLICT_MODE="perfile" ;;
+        s) CONFLICT_MODE="skip" ;;
+        *) log "Unrecognized choice '${choice:-}'; keeping existing files."; CONFLICT_MODE="skip" ;;
+    esac
+}
+
+# Interactively resolve one conflicting item: overwrite, skip, or view a diff
+# (then re-ask). Assumes a readable /dev/tty (only called in perfile mode).
+# Args: $1 - source, $2 - destination.
+resolve_one() {
+    local src="$1" dest="$2" ans
+    while true; do
+        read -rp "$(basename "$dest"): [o]verwrite / [s]kip / [d]iff? " ans < /dev/tty
+        case "$(printf '%s' "${ans:-}" | tr 'A-Z' 'a-z')" in
+            o) backup_and_install "$src" "$dest"; return ;;
+            s) log "Keeping existing $(basename "$dest")."; return ;;
+            d)
+                {
+                    echo "--- diff: your $(basename "$dest") (-) vs ProfilePilot (+) ---"
+                    # diff exits 1 when files differ; guard so `set -e` doesn't abort.
+                    if [[ -d "$src" ]]; then
+                        diff -ru "$dest" "$src" || true
+                    else
+                        diff -u "$dest" "$src" || true
+                    fi
+                    echo "--- end diff ---"
+                } > /dev/tty 2>&1
+                ;;
+            *) echo "Please answer o, s, or d." > /dev/tty ;;
+        esac
+    done
+}
+
+# Given the list of conflicting item names (existing files that differ from the
+# profile), report them, decide a mode, and act. Args: $1 - profile dir,
+# $2 - space-separated item names.
+resolve_conflicts() {
+    local profile_dir="$1" conflicts="$2" item
+
+    log "These existing files differ from the ProfilePilot profile:"
+    for item in $conflicts; do
+        log "  $item"
+    done
+
+    determine_conflict_mode
+    case "$CONFLICT_MODE" in
+        overwrite)
+            log "Overwriting all differing files (originals backed up as .bak.$RUN_TS)."
+            for item in $conflicts; do
+                backup_and_install "$profile_dir/$item" "$HOME/$item"
+            done
+            ;;
+        skip)
+            log "Keeping your existing files; not installing the differing profile files above."
+            ;;
+        perfile)
+            for item in $conflicts; do
+                resolve_one "$profile_dir/$item" "$HOME/$item"
+            done
+            ;;
+    esac
+}
+
+# Install all downloaded files to the home directory. Two passes: first install
+# anything missing and skip anything already identical, collecting only the
+# files that exist AND differ; then resolve just those conflicts (once).
 # Args: $1 - profile name, $2 - shell type (bash/zsh), $3 - OS directory name
 apply_dotfiles() {
     local profile="$1"
@@ -477,20 +597,36 @@ apply_dotfiles() {
 
     log "Applying profile files for $shell_type shell..."
 
-    for file in $(shell_files_for "$shell_type"); do
-        apply_item "$profile_dir/$file" "$HOME/$file"
-    done
-
-    for file in $UNIVERSAL_FILES; do
-        apply_item "$profile_dir/$file" "$HOME/$file"
-    done
-
+    # Assemble the full list of item names to consider (dotfile names contain no
+    # spaces, so a space-separated string is a safe bash 3.2-compatible list).
+    local items="" item
+    for item in $(shell_files_for "$shell_type"); do items="$items $item"; done
+    for item in $UNIVERSAL_FILES; do items="$items $item"; done
     local profile_dirs
     profile_dirs="$(profile_specific_dirs_for "$profile")"
     if [[ -n "$profile_dirs" ]]; then
-        for dir in $profile_dirs; do
-            apply_item "$profile_dir/$dir" "$HOME/$dir"
-        done
+        for item in $profile_dirs; do items="$items $item"; done
+    fi
+
+    # Pass 1: install missing items, leave identical ones alone, collect the
+    # rest (existing but different) as conflicts to resolve together.
+    local conflicts="" src dest
+    for item in $items; do
+        src="$profile_dir/$item"
+        dest="$HOME/$item"
+        [[ -e "$src" ]] || continue
+        if [[ ! -e "$dest" ]]; then
+            install_item "$src" "$dest"
+        elif items_identical "$src" "$dest"; then
+            log "$item already matches the profile; leaving it unchanged."
+        else
+            conflicts="$conflicts $item"
+        fi
+    done
+
+    # Pass 2: resolve conflicts, if any.
+    if [[ -n "$conflicts" ]]; then
+        resolve_conflicts "$profile_dir" "$conflicts"
     fi
 
     log "Profile files applied successfully"
