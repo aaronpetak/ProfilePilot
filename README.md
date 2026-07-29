@@ -109,7 +109,7 @@ The bootstrap script (`bootstrap.sh`) performs these steps:
 3. **Profile Selection** - Prompts user to choose Developer or Minimal
 4. **Package Installation** - Downloads and executes the selected Brewfile from `universal/brewfiles/`
 5. **Dotfiles Application** - Downloads and applies OS and profile-specific dotfiles (see [Existing Dotfiles & Backups](#existing-dotfiles--backups) for how conflicts with files you already have are handled)
-6. **Cleanup (Optional)** - Prompts to remove packages not in the selected profile
+6. **Cleanup (Optional)** - Asks before removing installed packages not in the selected profile (see [Package Cleanup](#package-cleanup))
 
 ### Existing Dotfiles & Backups
 
@@ -141,6 +141,30 @@ DOTFILES_CONFLICT=prompt bash bootstrap.sh
 ```
 
 If no terminal is available (e.g. CI or a container) and `DOTFILES_CONFLICT` is unset, the script defaults to **skip** — it will never silently replace an existing file unattended. Set `DOTFILES_CONFLICT=overwrite` in automation that should always apply the latest dotfiles.
+
+### Package Cleanup
+
+After installing the profile's packages, the script checks for Homebrew packages that are installed but **not** listed in the selected Brewfile — for example, tools you installed yourself with `brew install`. It does **not** remove them automatically. On an interactive terminal it lists them and asks once:
+
+- **`[R]` Remove them** — uninstall the listed packages. Removal is delegated to `brew bundle cleanup`, so a package still required by something in your profile is never removed. This cannot be undone (Homebrew keeps no backup).
+- **`[K]` Keep them** — leave every installed package in place.
+
+Control it non-interactively with the `CLEANUP` environment variable:
+
+```bash
+# Uninstall packages not in the profile
+CLEANUP=remove bash bootstrap.sh
+
+# Keep everything (never remove)
+CLEANUP=skip bash bootstrap.sh
+
+# Force the interactive prompt
+CLEANUP=prompt bash bootstrap.sh
+```
+
+If no terminal is available and `CLEANUP` is unset, the script defaults to **keep** — it will never uninstall your packages unattended. The older `SKIP_CLEANUP=1` opt-out still works and is treated the same as `CLEANUP=skip`.
+
+> **Note:** the prompt is global (remove all listed / keep all) rather than per-package. Deciding which packages are safe to remove depends on Homebrew's dependency graph, so that decision is left to `brew bundle cleanup` rather than reimplemented here.
 
 ### Cross-Platform Compatibility
 
