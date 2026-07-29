@@ -108,6 +108,29 @@ tty_available() {
     { true < /dev/tty; } 2>/dev/null
 }
 
+# If PATH is a symlink into a Node modules directory (i.e. a global npm
+# install), print the npm package name that owns it — including the scope for
+# scoped packages (e.g. @fresh-editor/fresh-editor). Prints nothing for
+# anything else (a manual copy, another package manager), so callers can tell a
+# resolvable npm duplicate from an unknown file. Args: $1 - the conflicting path.
+npm_package_owning() {
+    local path="$1" target rest
+    [[ -L "$path" ]] || return 0
+    target=$(readlink "$path" 2>/dev/null) || return 0
+    case "$target" in
+        */node_modules/*) ;;
+        *) return 0 ;;
+    esac
+    rest=${target##*/node_modules/}   # e.g. @fresh-editor/fresh-editor/run-fresh.js
+    if [[ "$rest" == @* ]]; then
+        # Scoped package: name is the first two path segments (@scope/name).
+        printf '%s/%s\n' "$(printf '%s' "$rest" | cut -d/ -f1)" "$(printf '%s' "$rest" | cut -d/ -f2)"
+    else
+        # Unscoped package: name is the first path segment.
+        printf '%s\n' "${rest%%/*}"
+    fi
+}
+
 # Log a fatal error and exit with status 1
 fatal() {
     log "FATAL: $*"
@@ -286,14 +309,19 @@ install_tflint_linux() {
 #
 # For every missing formula whose keg is actually installed, we resolve case 2:
 # a plain `brew link` (which never overwrites foreign files) fixes a benign
-# unlinked keg automatically; if a real conflict blocks it, we name the exact
-# overlapping formula and path and print the precise `brew link --overwrite`
-# command to run. `brew list`/`brew link` accept the tap-qualified name that
-# the check report prints, so no alias resolution is needed here.
+# unlinked keg automatically. If a real conflict blocks it, the keg is on disk
+# but a foreign file owns its binary path. Homebrew's copy is already installed,
+# so the fix is to make it the active command with `brew link --overwrite` — we
+# OFFER to run that interactively (never unattended, since --overwrite replaces
+# the foreign file). When the foreign file is a global npm install we also name
+# the package so the user can remove the now-duplicate copy with `npm rm -g`
+# themselves; we never uninstall from npm automatically. `brew list`/`brew link`
+# accept the tap-qualified name the check report prints, so no alias resolution
+# is needed here.
 # Args: $1 - the missing-dependencies report captured from `brew bundle check`
 resolve_unlinked_formulae() {
     local missing_report="$1"
-    local formula link_out conflict_path
+    local formula link_out conflict_path npm_pkg linked ans
 
     # Lines look like: "→ Formula sinelaw/fresh/fresh needs to be installed or updated."
     while IFS= read -r formula; do
@@ -313,10 +341,51 @@ resolve_unlinked_formulae() {
         else
             # Linking is blocked by a pre-existing file from another source.
             conflict_path=$(printf '%s\n' "$link_out" | awk '/^Target /{print $2; exit}')
-            log "  '$formula' cannot be linked because another file already owns its path${conflict_path:+: $conflict_path}."
-            log "  That file was almost certainly installed outside Homebrew (e.g. a global npm package that ships the same command)."
-            log "  Recommended fix: brew link --overwrite $formula"
-            log "  (Preview what that would replace first with: brew link --overwrite $formula --dry-run)"
+            log "  '$formula' is installed but cannot be linked because another file already owns its path${conflict_path:+: $conflict_path}."
+
+            # Identify an npm-global duplicate so we can name it precisely.
+            npm_pkg=""
+            [[ -n "$conflict_path" ]] && npm_pkg=$(npm_package_owning "$conflict_path")
+            if [[ -n "$npm_pkg" ]]; then
+                log "  That path is owned by the global npm package '$npm_pkg' — the same command installed via npm."
+            else
+                log "  That file was installed outside Homebrew (a manual copy or another package manager)."
+            fi
+
+            # #1: offer to hand the command to Homebrew now. `--overwrite`
+            # replaces the foreign file, so we ask first and never do it
+            # unattended (no TTY -> just print the manual steps below).
+            linked=""
+            if tty_available; then
+                {
+                    echo ""
+                    echo "Make Homebrew's '$formula' the active command by overwriting $conflict_path?"
+                    echo "  [y] Yes - run: brew link --overwrite $formula"
+                    echo "  [N] No  - leave it as-is and print the manual steps"
+                } > /dev/tty
+                read -rp "Overwrite? [y/N]: " ans < /dev/tty
+                if [[ "$(printf '%s' "${ans:-}" | tr 'A-Z' 'a-z')" == "y" ]]; then
+                    if brew link --overwrite "$formula" >/dev/null 2>&1; then
+                        linked=1
+                        log "  Linked Homebrew's '$formula' (ran: brew link --overwrite $formula)."
+                        [[ -n "$npm_pkg" ]] && log "  The npm copy is now an unused duplicate; remove it if you like: npm rm -g $npm_pkg"
+                    else
+                        log "  'brew link --overwrite $formula' did not succeed; see the manual steps below."
+                    fi
+                fi
+            fi
+
+            # #2: if we didn't (or couldn't) link, print the paired manual fix.
+            # Homebrew's copy is already installed, so the brew step is `link
+            # --overwrite`, not a reinstall.
+            if [[ -z "$linked" ]]; then
+                log "  To make Homebrew's copy the active command, run:"
+                log "    brew link --overwrite $formula"
+                if [[ -n "$npm_pkg" ]]; then
+                    log "  Then remove the duplicate npm copy (optional):"
+                    log "    npm rm -g $npm_pkg"
+                fi
+            fi
         fi
     done < <(printf '%s\n' "$missing_report" | sed -n 's/.*Formula \([^ ]*\) needs.*/\1/p')
 }

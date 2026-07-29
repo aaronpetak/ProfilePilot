@@ -166,6 +166,15 @@ If no terminal is available and `CLEANUP` is unset, the script defaults to **kee
 
 > **Note:** the prompt is global (remove all listed / keep all) rather than per-package. Deciding which packages are safe to remove depends on Homebrew's dependency graph, so that decision is left to `brew bundle cleanup` rather than reimplemented here.
 
+### Package Manager Overlaps (npm ↔ Homebrew)
+
+Occasionally a command in the Brewfile is *also* installed globally via npm, and the npm copy owns the command's path (e.g. `/opt/homebrew/bin/<cmd>`). Homebrew still installs its own copy but can't link it, so `brew bundle` keeps reporting the formula as missing. The script detects this "overlap":
+
+- If the keg is merely unlinked (nothing else in the way), it links it automatically.
+- If a foreign file owns the path, it identifies the culprit — naming the global npm package when that's the source — and, on an interactive terminal, **offers** to run `brew link --overwrite <formula>` so Homebrew's copy becomes the active command (this keeps it updatable via `brew upgrade`). It never does this unattended.
+
+Because Homebrew's copy is already installed, the fix is `brew link --overwrite`, *not* a reinstall. The duplicate npm package is **never uninstalled automatically** — the script only prints the exact `npm rm -g <package>` command for you to run yourself if you want to remove the leftover.
+
 ### Cross-Platform Compatibility
 
 - **Homebrew casks** are macOS-only; on Linux they are silently ignored (casks needed on both are guarded with `if OS.mac?` in the Brewfile)
