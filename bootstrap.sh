@@ -70,6 +70,16 @@ RUN_TS="$(date +%Y%m%d-%H%M%S)"
 # exist yet are always installed; files identical to the profile are left alone.
 DOTFILES_CONFLICT="${DOTFILES_CONFLICT:-}"
 
+# How to handle Homebrew packages that are installed but NOT listed in the
+# selected Brewfile (e.g. tools the user installed themselves):
+#   remove - uninstall them
+#   skip   - keep them
+#   prompt - ask interactively (requires a TTY)
+# Unset means: prompt when a TTY is available, otherwise skip, so packages a
+# user installed separately are never uninstalled unattended. The older
+# SKIP_CLEANUP=1 opt-out still works and is treated as skip.
+CLEANUP="${CLEANUP:-}"
+
 if [[ "$OSTYPE" == darwin* ]]; then
     LOGDIR="$HOME/Library/Logs"
 else
@@ -86,6 +96,16 @@ LOGFILE="$LOGDIR/homebrew-restore.log"
 # Log a message with timestamp to both stdout and logfile
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
+}
+
+# True if we can actually open the controlling terminal to prompt the user.
+# `[[ -r /dev/tty ]]` is not sufficient: /dev/tty can look readable yet fail to
+# open ("Device not configured" / "No such device or address") when there is no
+# controlling terminal (CI, containers, some `curl | bash` invocations). Under
+# `set -e` that failed open on the first prompt would abort the whole script, so
+# we probe by actually opening it here.
+tty_available() {
+    { true < /dev/tty; } 2>/dev/null
 }
 
 # Log a fatal error and exit with status 1
@@ -499,7 +519,7 @@ determine_conflict_mode() {
 
     # Prompting needs a readable controlling terminal (works under `curl | bash`
     # via /dev/tty, but not in CI/containers that have none).
-    if [[ ! -r /dev/tty ]]; then
+    if ! tty_available; then
         if [[ "$DOTFILES_CONFLICT" == "prompt" ]]; then
             log "DOTFILES_CONFLICT=prompt was set but no interactive terminal is available; keeping existing files."
         else
@@ -715,38 +735,92 @@ apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
 # CLEANUP PACKAGES
 ###############################################################################
 
+# Resolve how to handle installed packages not listed in the Brewfile into the
+# global CLEANUP_MODE (remove|skip). Mirrors the dotfiles conflict handling:
+# honors $CLEANUP (remove|skip|prompt), keeps the older $SKIP_CLEANUP=1 working
+# as an alias for skip, prompts on a TTY, and defaults to skip when no TTY is
+# available so a user's own packages are never uninstalled unattended.
+#
+# The prompt is intentionally global (Remove all / Keep all) rather than
+# per-package: deciding which packages are safe to remove requires Homebrew's
+# dependency graph, so the actual removal is delegated to `brew bundle cleanup`
+# (which never removes a package still required by one in the Brewfile).
+CLEANUP_MODE=""
+determine_cleanup_mode() {
+    CLEANUP_MODE=""
+
+    local pref="$CLEANUP"
+    # Backward compatibility with the original opt-out switch.
+    if [[ -z "$pref" && -n "${SKIP_CLEANUP:-}" ]]; then
+        pref="skip"
+    fi
+
+    case "$pref" in
+        remove) CLEANUP_MODE="remove"; return ;;
+        skip)   CLEANUP_MODE="skip"; return ;;
+        prompt) ;;  # fall through to the interactive prompt below
+        "")     ;;  # no preference; prompt if we can, else skip
+        *)      log "Warning: ignoring unknown CLEANUP='$pref' (expected remove|skip|prompt)." ;;
+    esac
+
+    if ! tty_available; then
+        if [[ "$CLEANUP" == "prompt" ]]; then
+            log "CLEANUP=prompt was set but no interactive terminal is available; keeping all installed packages."
+        else
+            log "No interactive terminal available; keeping packages not listed in $BREWFILE. Re-run with CLEANUP=remove to uninstall them."
+        fi
+        CLEANUP_MODE="skip"
+        return
+    fi
+
+    {
+        echo ""
+        echo "The packages listed above are installed but not part of $BREWFILE."
+        echo "How should they be handled?"
+        echo "  [R] Remove them - uninstall the packages above (cannot be undone; Homebrew keeps no backup)"
+        echo "  [K] Keep them   - leave every installed package in place"
+    } > /dev/tty
+    local choice
+    read -rp "Choose [R/K]: " choice < /dev/tty
+    case "$(printf '%s' "${choice:-}" | tr 'A-Z' 'a-z')" in
+        r) CLEANUP_MODE="remove" ;;
+        k) CLEANUP_MODE="skip" ;;
+        *) log "Unrecognized choice '${choice:-}'; keeping all packages."; CLEANUP_MODE="skip" ;;
+    esac
+}
+
 FORMULA_COUNT=$(brew list --formula | wc -l | tr -d ' ')
 CASK_COUNT=$(brew list --cask 2>/dev/null | wc -l | tr -d ' ')
 TOTAL_PKGS=$((FORMULA_COUNT + CASK_COUNT))
 
-# Cleanup runs automatically (no interactive prompt) so the script can complete
-# unattended. It removes any Homebrew package NOT listed in the selected
-# Brewfile. Set SKIP_CLEANUP=1 to opt out (useful when other Homebrew packages
-# on the machine should be preserved).
 if [[ "$TOTAL_PKGS" -eq 0 ]]; then
     log "No packages installed; cleanup unnecessary."
-elif [[ -n "${SKIP_CLEANUP:-}" ]]; then
-    log "SKIP_CLEANUP set; skipping removal of packages not listed in $BREWFILE."
 else
     log "Checking for packages not listed in $BREWFILE ($TOTAL_PKGS currently installed)..."
 
-    # Without --force, `brew bundle cleanup` only lists what it would remove
-    # and doesn't touch anything. On a machine that predates ProfilePilot,
-    # that removal list can include tools installed manually or by a previous
-    # setup that simply aren't part of the selected profile, so log the
-    # preview before the destructive pass rather than removing them silently.
+    # Without --force, `brew bundle cleanup` only reports what it would remove
+    # and touches nothing. Use it to preview the candidates so the user (or the
+    # log, in non-interactive runs) can see exactly what is at stake before any
+    # destructive pass.
     CLEANUP_PREVIEW=$(brew bundle cleanup --file="$TMPDIR/$BREWFILE" 2>&1) || true
-    if [[ -n "$CLEANUP_PREVIEW" ]]; then
-        log "The following will be removed because they are not listed in $BREWFILE:"
+
+    if [[ -z "$CLEANUP_PREVIEW" ]]; then
+        log "Nothing to clean up; every installed package is part of $BREWFILE."
+    else
+        log "The following are installed but not listed in $BREWFILE:"
         while IFS= read -r line; do
             [[ -n "$line" ]] && log "  $line"
         done <<< "$CLEANUP_PREVIEW"
-        log "Set SKIP_CLEANUP=1 and re-run this script if you want to keep these instead."
-    fi
 
-    log "Cleaning up: removing any packages not listed in $BREWFILE..."
-    brew bundle cleanup --file="$TMPDIR/$BREWFILE" --force
-    log "Cleanup complete."
+        determine_cleanup_mode
+        if [[ "$CLEANUP_MODE" == "remove" ]]; then
+            log "Removing packages not listed in $BREWFILE..."
+            brew bundle cleanup --file="$TMPDIR/$BREWFILE" --force
+            log "Cleanup complete."
+        else
+            log "Keeping all installed packages; nothing was removed. (Set CLEANUP=remove to uninstall packages not in the profile.)"
+        fi
+    fi
 fi
 
 ###############################################################################
