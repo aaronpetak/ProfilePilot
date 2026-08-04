@@ -55,6 +55,17 @@ profile_specific_dirs_for() {
     esac
 }
 
+# Map a profile name (as accepted by the PROFILE env var or the interactive
+# menu) to its Brewfile. Single source of truth for the valid profiles, so the
+# env override and the menu can never drift apart. Prints nothing for an
+# unknown profile, which callers treat as invalid.
+brewfile_for_profile() {
+    case "$1" in
+        developer) echo "Brewfile-developer" ;;
+        minimal)   echo "Brewfile-minimal" ;;
+    esac
+}
+
 ###############################################################################
 # CONFIGURATION
 ###############################################################################
@@ -831,19 +842,34 @@ log "Detected OS: $OS_TYPE ($OS_DOTFILES_DIR)"
 # PROFILE SELECTION - Ask user which environment to bootstrap
 ###############################################################################
 
-echo ""
-echo "Select environment profile:"
-echo "  1) Developer Workstation"
-echo "  2) Minimal Host"
-echo ""
+# Profile can be preselected non-interactively via the PROFILE env var
+# (developer|minimal), which is required for unattended runs (CI, containers,
+# curl|bash with no TTY). Otherwise we present the interactive menu, but only
+# when a controlling terminal is actually available: reading from /dev/tty with
+# none present fails under `set -e` and would abort the whole run here, before
+# any of the non-interactive knobs (DOTFILES_CONFLICT, CLEANUP) could apply.
+BREWFILE=""
+if [[ -n "${PROFILE:-}" ]]; then
+    BREWFILE="$(brewfile_for_profile "$PROFILE")"
+    [[ -n "$BREWFILE" ]] || fatal "Invalid PROFILE='$PROFILE' (expected: developer or minimal)."
+    log "Profile preselected via PROFILE=$PROFILE"
+elif tty_available; then
+    echo ""
+    echo "Select environment profile:"
+    echo "  1) Developer Workstation"
+    echo "  2) Minimal Host"
+    echo ""
 
-read -rp "Enter 1 or 2: " choice < /dev/tty
+    read -rp "Enter 1 or 2: " choice < /dev/tty
 
-case "$choice" in
-    1) BREWFILE="Brewfile-developer" ;;
-    2) BREWFILE="Brewfile-minimal" ;;
-    *) fatal "Invalid choice." ;;
-esac
+    case "$choice" in
+        1) BREWFILE="Brewfile-developer" ;;
+        2) BREWFILE="Brewfile-minimal" ;;
+        *) fatal "Invalid choice." ;;
+    esac
+else
+    fatal "No profile selected and no interactive terminal available. Set PROFILE=developer or PROFILE=minimal to run unattended."
+fi
 
 log "Selected Brewfile: $BREWFILE"
 
