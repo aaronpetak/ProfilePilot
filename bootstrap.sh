@@ -229,6 +229,14 @@ install_homebrew() {
         return
     fi
 
+    # Homebrew's own installer shells out to git/curl/tar/gzip to fetch and
+    # unpack its portable Ruby. Minimal Linux images (notably SUSE) may ship
+    # without tar/gzip, so ensure them before running the installer -- otherwise
+    # it fails with "tar: command not found" before our build-tools step runs.
+    if [[ "$OS_TYPE" == "linux" ]]; then
+        ensure_linux_packages git curl tar gzip
+    fi
+
     log "Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL "$HOMEBREW_INSTALL_URL")" ||
         fatal "Failed to install Homebrew from $HOMEBREW_INSTALL_URL"
