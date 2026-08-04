@@ -915,7 +915,10 @@ elif [[ "$OSTYPE" == linux-musl* ]]; then
     # glibc (>= 2.13, with its own glibc formula filling 2.13-2.38). It does not
     # support musl. Fail with a clear reason rather than the generic message.
     fatal "Unsupported OS: $OSTYPE. This installer requires a glibc-based Linux (Homebrew does not support musl/Alpine)."
-elif [[ "$OSTYPE" == linux-gnu* ]]; then
+elif [[ "$OSTYPE" == linux-gnu* || "$OSTYPE" == linux ]]; then
+    # Most distros' bash reports OSTYPE=linux-gnu, but some (notably SUSE) are
+    # compiled to report a bare "linux". The musl case is already excluded above,
+    # so a bare "linux" here is glibc.
     OS_TYPE="linux"
     # All glibc Linux distros share a single dotfiles set (Debian/Ubuntu,
     # Fedora/RHEL, Arch, openSUSE). Distro-specific behavior (Debian chroot,
