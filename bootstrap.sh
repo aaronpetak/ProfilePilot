@@ -13,7 +13,14 @@ DOTFILES_ARCHIVE_URL="https://github.com/aaronpetak/ProfilePilot/archive/refs/he
 # Homebrew installation paths (OS-specific)
 HOMEBREW_LINUX_INSTALL_DIR="/home/linuxbrew/.linuxbrew" # Default Linux Homebrew path
 HOMEBREW_LINUX_PATH="$HOMEBREW_LINUX_INSTALL_DIR/bin"   # Path to brew executable on Linux
-HOMEBREW_MACOS_INSTALL_DIR="/opt/homebrew"              # Default macOS Homebrew path (Apple Silicon)
+# macOS Homebrew prefix depends on the CPU: Apple Silicon installs to
+# /opt/homebrew, Intel to /usr/local. Hardcoding /opt/homebrew broke Intel Macs
+# (the PATH-wiring branch never matched, so every later `brew` call failed).
+if [[ "$(uname -m)" == "arm64" ]]; then
+    HOMEBREW_MACOS_INSTALL_DIR="/opt/homebrew"          # Apple Silicon
+else
+    HOMEBREW_MACOS_INSTALL_DIR="/usr/local"             # Intel
+fi
 HOMEBREW_MACOS_PATH="$HOMEBREW_MACOS_INSTALL_DIR/bin"   # Path to brew executable on macOS
 
 # Shell-specific dotfiles to download and apply. Aliases live in the universal
@@ -262,8 +269,16 @@ install_build_tools() {
     elif command -v apt-get >/dev/null 2>&1; then
         # Debian / Ubuntu
         sudo apt-get install -y build-essential || fatal "Failed to install build-essential"
+    elif command -v pacman >/dev/null 2>&1; then
+        # Arch / Manjaro. base-devel is a package group; --needed skips ones
+        # already present so a re-run is a no-op.
+        sudo pacman -S --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
+    elif command -v zypper >/dev/null 2>&1; then
+        # openSUSE. The "devel_basis" pattern is the equivalent build-tool bundle.
+        sudo zypper install -y -t pattern devel_basis 2>/dev/null || \
+            sudo zypper install -y gcc gcc-c++ make || fatal "Failed to install build tools via zypper"
     else
-        fatal "No supported package manager found (tried dnf, apt-get)"
+        fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
     fi
 
     if ! command -v gcc >/dev/null 2>&1; then
@@ -288,8 +303,12 @@ ensure_linux_packages() {
     elif command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update || true
         sudo apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     else
-        fatal "No supported package manager found (tried dnf, apt-get)"
+        fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
     fi
 }
 
@@ -889,11 +908,18 @@ print_summary() {
 if [[ "$OSTYPE" == darwin* ]]; then
     OS_TYPE="macos"
     OS_DOTFILES_DIR="macos"
+elif [[ "$OSTYPE" == linux-musl* ]]; then
+    # musl-based distros (Alpine and derivatives) are intentionally out of scope:
+    # this whole script is built on Homebrew, and Homebrew on Linux requires
+    # glibc (>= 2.13, with its own glibc formula filling 2.13-2.38). It does not
+    # support musl. Fail with a clear reason rather than the generic message.
+    fatal "Unsupported OS: $OSTYPE. This installer requires a glibc-based Linux (Homebrew does not support musl/Alpine)."
 elif [[ "$OSTYPE" == linux-gnu* ]]; then
     OS_TYPE="linux"
-    # All Linux distros share a single dotfiles set. Distro-specific behavior
-    # (Debian chroot, lesspipe, WSL browser export) is guarded inside those
-    # files, so no per-distro directory is needed.
+    # All glibc Linux distros share a single dotfiles set (Debian/Ubuntu,
+    # Fedora/RHEL, Arch, openSUSE). Distro-specific behavior (Debian chroot,
+    # lesspipe, WSL browser export) is guarded inside those files, so no
+    # per-distro directory is needed.
     OS_DOTFILES_DIR="linux"
 else
     fatal "Unsupported OS: $OSTYPE"
