@@ -495,7 +495,20 @@ install_brewfile_packages() {
         # trusted, but we also set HOMEBREW_NO_REQUIRE_TAP_TRUST as a guaranteed
         # fallback so the untrusted-tap gate can never block the install. The
         # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
-        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile" 2>&1; then
+        #
+        # HOMEBREW_DOWNLOAD_CONCURRENCY=1 forces serial downloads (default is
+        # auto = 2x CPU cores). Parallel downloads draw multiple live progress
+        # spinners at once, which interleave into staircased/cascading output on
+        # some terminals, and race on shared cache temp files -- we saw both a
+        # "go process has already locked" cellar race and a libidn2
+        # ".incomplete manifest" rmdir race on the first attempt. Serializing
+        # trades a little download speed for readable output and far fewer
+        # transient failures. HOMEBREW_NO_EMOJI drops the success badge that is
+        # part of the same spinner drawing.
+        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 \
+            HOMEBREW_DOWNLOAD_CONCURRENCY=1 \
+            HOMEBREW_NO_EMOJI=1 \
+            brew bundle --file="$brewfile" 2>&1; then
             # brew bundle's progress spinners can leave the terminal mangled
             # (staircased output, no keystroke echo at later prompts) if a job
             # dies mid-draw. Restore it before we move on to interactive prompts.
