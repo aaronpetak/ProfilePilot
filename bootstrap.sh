@@ -87,6 +87,17 @@ BREWFILES_URL="$DOTFILES_REPO/universal/brewfiles"
 # re-run never overwrites a previous run's backup.
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 
+# End-of-run status. Each major step records its outcome here so the final
+# summary reflects what actually happened rather than an unconditional
+# "success". Package failures are a real failure (the install step deliberately
+# continues past them instead of aborting), so they flip the exit code;
+# kept dotfiles and un-personalized gitconfig are legitimate, non-error states
+# that are reported but do not fail the run. Values are set at each step's
+# decision point; "unknown" means the step did not run.
+STATUS_PACKAGES="unknown"   # ok | incomplete
+STATUS_DOTFILES="unknown"   # applied | kept | not-found
+STATUS_GITCONFIG="unknown"  # personalized | already | incomplete | absent
+
 # How to handle an existing dotfile that differs from the profile version:
 #   overwrite - back it up, then install the profile version
 #   skip      - keep the existing file, don't install the profile version
@@ -447,6 +458,7 @@ install_brewfile_packages() {
         # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
         if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile" 2>&1; then
             log "All Brewfile dependencies installed successfully."
+            STATUS_PACKAGES="ok"
             return 0
         fi
 
@@ -465,7 +477,9 @@ install_brewfile_packages() {
         # A recount says nothing is actually missing (e.g. the failures were
         # non-package steps); treat as success.
         log "Re-check reports all dependencies are present; continuing."
+        STATUS_PACKAGES="ok"
     else
+        STATUS_PACKAGES="incomplete"
         log "The following dependencies are still missing:"
         while IFS= read -r line; do
             [[ -n "$line" ]] && log "  $line"
@@ -689,6 +703,7 @@ resolve_conflicts() {
             ;;
         skip)
             log "Keeping your existing files; not installing the differing profile files above."
+            STATUS_DOTFILES="kept"
             ;;
         perfile)
             for item in $conflicts; do
@@ -708,7 +723,7 @@ apply_dotfiles() {
     local os_dir="$3"
     local profile_dir="$TMPDIR/dotfiles-$os_dir-$profile"
 
-    [[ ! -d "$profile_dir" ]] && { log "Warning: ProfilePilot profile directory not found: $profile_dir"; return; }
+    [[ ! -d "$profile_dir" ]] && { log "Warning: ProfilePilot profile directory not found: $profile_dir"; STATUS_DOTFILES="not-found"; return; }
 
     log "Applying profile files for $shell_type shell..."
 
@@ -739,7 +754,10 @@ apply_dotfiles() {
         fi
     done
 
-    # Pass 2: resolve conflicts, if any.
+    # Pass 2: resolve conflicts, if any. resolve_conflicts sets STATUS_DOTFILES
+    # to "kept" when the user chose to keep differing files; otherwise this run
+    # applied the profile.
+    STATUS_DOTFILES="applied"
     if [[ -n "$conflicts" ]]; then
         resolve_conflicts "$profile_dir" "$conflicts"
     fi
@@ -761,12 +779,13 @@ apply_dotfiles() {
 personalize_gitconfig() {
     local gitconfig="$HOME/.gitconfig"
 
-    [[ -f "$gitconfig" ]] || { log "Note: ~/.gitconfig not present; skipping git personalization."; return; }
+    [[ -f "$gitconfig" ]] || { log "Note: ~/.gitconfig not present; skipping git personalization."; STATUS_GITCONFIG="absent"; return; }
 
     # Nothing to do if the placeholders are already gone (e.g. a re-run where the
     # user kept their existing, already-personalized .gitconfig).
     if ! grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
         log "~/.gitconfig is already personalized; leaving it unchanged."
+        STATUS_GITCONFIG="already"
         return
     fi
 
@@ -788,6 +807,7 @@ personalize_gitconfig() {
     if [[ -z "$name" && -z "$email" && -z "$username" ]]; then
         log "No git identity provided and no interactive terminal; leaving ~/.gitconfig placeholders in place."
         log "Set them later with: git config --global user.name '...'; git config --global user.email '...'; git config --global user.username '...'"
+        STATUS_GITCONFIG="incomplete"
         return
     fi
 
@@ -816,7 +836,50 @@ personalize_gitconfig() {
     log "Personalized ~/.gitconfig."
     if grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
         log "Note: some git identity fields were left blank and still contain placeholders in ~/.gitconfig; edit them to finish."
+        STATUS_GITCONFIG="incomplete"
+    else
+        STATUS_GITCONFIG="personalized"
     fi
+}
+
+# Print an end-of-run summary reflecting what each step actually did, and return
+# a non-zero status if anything genuinely failed. Only unresolved package
+# failures count as a failure: the package step deliberately continues past them
+# rather than aborting, so without this the run would otherwise end on an
+# unconditional "success" message. Kept dotfiles and an un-personalized gitconfig
+# are legitimate user/environment states, so they are reported but do not fail
+# the run. Returns 0 on success, 1 if packages are incomplete.
+print_summary() {
+    local rc=0
+    log "----- Summary -----"
+
+    case "$STATUS_PACKAGES" in
+        ok)         log "  Packages:  all Brewfile dependencies installed." ;;
+        incomplete) log "  Packages:  FAILED - some dependencies could not be installed (see log above)."; rc=1 ;;
+        *)          log "  Packages:  not attempted." ;;
+    esac
+
+    case "$STATUS_DOTFILES" in
+        applied)   log "  Dotfiles:  applied." ;;
+        kept)      log "  Dotfiles:  kept your existing files; profile versions not installed (set DOTFILES_CONFLICT=overwrite to apply them)." ;;
+        not-found) log "  Dotfiles:  profile directory not found; none applied." ;;
+        *)         log "  Dotfiles:  not attempted." ;;
+    esac
+
+    case "$STATUS_GITCONFIG" in
+        personalized) log "  Gitconfig: personalized." ;;
+        already)      log "  Gitconfig: already personalized; left unchanged." ;;
+        incomplete)   log "  Gitconfig: some identity fields still contain placeholders; edit ~/.gitconfig to finish." ;;
+        absent)       log "  Gitconfig: ~/.gitconfig not present; skipped." ;;
+        *)            log "  Gitconfig: not attempted." ;;
+    esac
+
+    if [[ "$rc" -eq 0 ]]; then
+        log "Environment restored successfully."
+    else
+        log "Environment restored with errors; see the summary above."
+    fi
+    return "$rc"
 }
 
 ###############################################################################
@@ -1013,5 +1076,12 @@ fi
 # COMPLETION
 ###############################################################################
 
-log "Environment restored successfully."
-exit 0
+# Report what actually happened. print_summary returns non-zero if packages
+# failed to install, so the run's exit status reflects real failures instead of
+# always reporting success. Calling it as an `if` condition keeps `set -e` from
+# aborting on that non-zero return before we can exit with the intended status.
+if print_summary; then
+    exit 0
+else
+    exit 1
+fi
