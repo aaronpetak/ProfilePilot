@@ -803,6 +803,7 @@ personalize_gitconfig() {
     # Nothing to do if the placeholders are already gone (e.g. a re-run where the
     # user kept their existing, already-personalized .gitconfig).
     if ! grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
+        # shellcheck disable=SC2088  # "~/.gitconfig" is display text in a log message, not a path to expand.
         log "~/.gitconfig is already personalized; leaving it unchanged."
         STATUS_GITCONFIG="already"
         return
