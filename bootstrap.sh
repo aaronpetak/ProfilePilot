@@ -151,6 +151,18 @@ tty_available() {
     { true < /dev/tty; } 2>/dev/null
 }
 
+# Restore sane terminal settings. Some subprocesses -- notably `brew bundle`'s
+# parallel installers drawing progress spinners -- can leave the controlling
+# terminal mangled if a job dies mid-draw: output "staircases" because ONLCR is
+# disabled, and later prompts stop echoing keystrokes (ECHO/ICANON disabled) so
+# the user cannot type an answer. Reset to a known-good state. Guarded so it is a
+# no-op when there is no controlling terminal, and `|| true` so a failure under
+# `set -e` can never abort the run.
+reset_tty() {
+    tty_available || return 0
+    stty sane < /dev/tty 2>/dev/null || true
+}
+
 # If PATH is a symlink into a Node modules directory (i.e. a global npm
 # install), print the npm package name that owns it — including the scope for
 # scoped packages (e.g. @fresh-editor/fresh-editor). Prints nothing for
@@ -484,11 +496,16 @@ install_brewfile_packages() {
         # fallback so the untrusted-tap gate can never block the install. The
         # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
         if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew bundle --file="$brewfile" 2>&1; then
+            # brew bundle's progress spinners can leave the terminal mangled
+            # (staircased output, no keystroke echo at later prompts) if a job
+            # dies mid-draw. Restore it before we move on to interactive prompts.
+            reset_tty
             log "All Brewfile dependencies installed successfully."
             STATUS_PACKAGES="ok"
             return 0
         fi
 
+        reset_tty
         log "Warning: brew bundle attempt $attempt/$attempts reported one or more failures."
         attempt=$((attempt + 1))
         if (( attempt <= attempts )); then
@@ -664,6 +681,11 @@ determine_conflict_mode() {
         CONFLICT_MODE="skip"
         return
     fi
+
+    # Defensively restore the terminal in case an earlier subprocess left it in
+    # a state where keystrokes are not echoed, which would make this prompt
+    # appear frozen.
+    reset_tty
 
     {
         echo ""
