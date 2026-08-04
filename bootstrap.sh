@@ -721,6 +721,78 @@ apply_dotfiles() {
     log "Profile files applied successfully"
 }
 
+# Fill in the personal fields of the freshly-installed ~/.gitconfig.
+#
+# The shipped .gitconfig carries placeholders ({FULL NAME}, {GITHUB EMAIL},
+# {GITHUB USERNAME}) that used to require a manual edit after the run — easy to
+# forget, leaving git commits attributed to "{FULL NAME}". Instead we prompt for
+# the values here and substitute them in place.
+#
+# Values may be supplied via env (GIT_NAME, GIT_EMAIL, GIT_USERNAME) to run
+# unattended; any not supplied are prompted for on a TTY. With no TTY and no env
+# values we leave the placeholders intact and print how to fix them, rather than
+# baking blanks into the config.
+personalize_gitconfig() {
+    local gitconfig="$HOME/.gitconfig"
+
+    [[ -f "$gitconfig" ]] || { log "Note: ~/.gitconfig not present; skipping git personalization."; return; }
+
+    # Nothing to do if the placeholders are already gone (e.g. a re-run where the
+    # user kept their existing, already-personalized .gitconfig).
+    if ! grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
+        log "~/.gitconfig is already personalized; leaving it unchanged."
+        return
+    fi
+
+    local name="${GIT_NAME:-}" email="${GIT_EMAIL:-}" username="${GIT_USERNAME:-}"
+
+    # Prompt for anything not preset, but only if we can read a terminal.
+    if tty_available; then
+        {
+            echo ""
+            echo "Personalize your git identity (written to ~/.gitconfig):"
+        } > /dev/tty
+        [[ -z "$name" ]]     && read -rp "  Full name: " name < /dev/tty
+        [[ -z "$email" ]]    && read -rp "  GitHub email (e.g. you@example.com or the GitHub no-reply address): " email < /dev/tty
+        [[ -z "$username" ]] && read -rp "  GitHub username: " username < /dev/tty
+    fi
+
+    # If we still have no values (no TTY and no env), don't write blanks over the
+    # placeholders — leave them so the config is obviously still incomplete.
+    if [[ -z "$name" && -z "$email" && -z "$username" ]]; then
+        log "No git identity provided and no interactive terminal; leaving ~/.gitconfig placeholders in place."
+        log "Set them later with: git config --global user.name '...'; git config --global user.email '...'; git config --global user.username '...'"
+        return
+    fi
+
+    # Substitute each provided value in place. We escape the substitution's
+    # special characters (&, /, and \) so an address or name containing them
+    # can't corrupt the sed replacement. Any field left blank keeps its
+    # placeholder, which we report so it isn't silently forgotten.
+    local sed_escaped
+    sed_escape() { printf '%s' "$1" | sed -e 's/[&/\]/\\&/g'; }
+
+    if [[ -n "$name" ]]; then
+        sed_escaped=$(sed_escape "$name")
+        sed -i.bak "s/{FULL NAME}/$sed_escaped/" "$gitconfig"
+    fi
+    if [[ -n "$email" ]]; then
+        sed_escaped=$(sed_escape "$email")
+        sed -i.bak "s/{GITHUB EMAIL}/$sed_escaped/" "$gitconfig"
+    fi
+    if [[ -n "$username" ]]; then
+        sed_escaped=$(sed_escape "$username")
+        sed -i.bak "s/{GITHUB USERNAME}/$sed_escaped/" "$gitconfig"
+    fi
+    # sed -i on both GNU (Linux) and BSD (macOS) leaves a .bak file; remove it.
+    rm -f "$gitconfig.bak"
+
+    log "Personalized ~/.gitconfig."
+    if grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
+        log "Note: some git identity fields were left blank and still contain placeholders in ~/.gitconfig; edit them to finish."
+    fi
+}
+
 ###############################################################################
 # OS DETECTION - Determine platform and set appropriate variables
 ###############################################################################
@@ -799,6 +871,10 @@ DOTFILES_PROFILE="profile-${BREWFILE#Brewfile-}"
 SHELL_TYPE="${SHELL##*/}"
 download_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
 apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
+
+# Fill in name/email/username in the just-installed ~/.gitconfig interactively,
+# so it never gets left with the shipped placeholders.
+personalize_gitconfig
 
 ###############################################################################
 # CLEANUP PACKAGES
