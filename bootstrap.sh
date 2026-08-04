@@ -27,6 +27,20 @@ shell_files_for() {
     case "$1" in
         bash) echo ".bashrc .bash_environment" ;;
         zsh)  echo ".zshrc .zprofile" ;;
+        *)    ;;  # unknown shell: no shell-specific files (defensive; see shell_for_os)
+    esac
+}
+
+# The shell whose dotfiles a given OS ships. The repo is organized one shell per
+# OS (macos/ has only .zshrc/.zprofile, linux/ has only .bashrc/.bash_environment),
+# so the dotfiles to install are determined by the OS, NOT by the user's login
+# shell ($SHELL). Deriving from $SHELL breaks whenever the login shell doesn't
+# match the OS's shipped set (e.g. bash login shell on macOS -> looks for a
+# nonexistent .bashrc under macos/ and installs nothing).
+shell_for_os() {
+    case "$1" in
+        macos) echo "zsh" ;;
+        linux) echo "bash" ;;
     esac
 }
 
@@ -468,7 +482,8 @@ download_dotfiles() {
     log "Downloading dotfiles for $os_dir/$profile"
     mkdir -p "$dotfiles_dir"
 
-    local shell_type="${SHELL##*/}"
+    local shell_type
+    shell_type="$(shell_for_os "$OS_TYPE")"
     for file in $(shell_files_for "$shell_type"); do
         local file_url="$DOTFILES_REPO/$os_dir/$profile/$file"
         local dest="$dotfiles_dir/$file"
@@ -868,7 +883,7 @@ fi
 ###############################################################################
 
 DOTFILES_PROFILE="profile-${BREWFILE#Brewfile-}"
-SHELL_TYPE="${SHELL##*/}"
+SHELL_TYPE="$(shell_for_os "$OS_TYPE")"
 download_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
 apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
 
