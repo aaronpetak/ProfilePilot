@@ -272,7 +272,14 @@ install_build_tools() {
     # of whether the compiler toolchain is already present, so re-runs and
     # systems that have gcc but not unzip still get it. bubblewrap is a Homebrew
     # sandbox dependency and is ensured here too.
-    ensure_linux_packages unzip bubblewrap
+    #
+    # gawk provides awk, which Homebrew's ca-certificates formula uses in its
+    # post-install step to locate the system CA bundle and link openssl's
+    # cert.pem. Minimal Fedora images ship without awk; when it is absent that
+    # post-install silently fails, leaving a broken cert.pem that makes every
+    # TLS-using Homebrew tool (brew update, brew's curl/git, tflint download)
+    # fail with "unable to get local issuer certificate". Ensure it up front.
+    ensure_linux_packages unzip bubblewrap gawk
 
     if command -v gcc >/dev/null 2>&1; then
         log "Build tools already installed."
@@ -330,6 +337,31 @@ ensure_linux_packages() {
     else
         fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
     fi
+}
+
+# Repair a ca-certificates install whose post-install step failed because awk
+# was missing (common on minimal Fedora images). The symptom is a broken
+# openssl cert.pem symlink, which makes every TLS operation through Homebrew's
+# openssl -- brew update, brew's bundled curl/git, the tflint download, and the
+# dotfile downloads -- fail with "unable to get local issuer certificate".
+#
+# On a fresh run install_build_tools has just ensured gawk, so re-running the
+# post-install now succeeds. This makes an already-broken machine self-heal on
+# the next run instead of requiring the user to reinstall from scratch.
+repair_ca_certificates() {
+    [[ "$OS_TYPE" == "linux" ]] || return 0
+    command -v brew >/dev/null 2>&1 || return 0
+
+    # Only act if openssl@3 is installed but its cert.pem is a broken symlink.
+    local cert_pem="$HOMEBREW_LINUX_INSTALL_DIR/etc/openssl@3/cert.pem"
+    brew list ca-certificates >/dev/null 2>&1 || return 0
+    if [[ -e "$cert_pem" ]]; then
+        return 0
+    fi
+
+    log "Repairing ca-certificates (its post-install failed, leaving a broken CA bundle)..."
+    brew postinstall ca-certificates 2>/dev/null ||
+        log "Note: brew postinstall ca-certificates did not complete; TLS through Homebrew may still fail."
 }
 
 # Install tflint on Linux.
@@ -554,6 +586,32 @@ install_brewfile_packages() {
     return 0
 }
 
+# Download an optional dotfile, distinguishing a genuine "not present in the
+# repo" from a real transport failure. curl -f returns exit 22 for an HTTP 4xx
+# (a 404 means the file legitimately isn't in this profile -- expected and
+# optional). Any other non-zero exit is a transport problem (TLS/DNS/connection)
+# and must be surfaced loudly: previously all failures were funneled into an
+# "(optional) not found" note, which hid real errors such as a broken CA bundle
+# behind a benign-looking message.
+# Args: $1 - source URL, $2 - destination path, $3 - human label for messages
+# Returns: 0 on success, 1 on any failure (already logged).
+download_optional_file() {
+    local url="$1" dest="$2" label="$3"
+    local err rc=0
+    # `|| rc=$?` keeps curl out of the final position of the list so `set -e`
+    # does not abort on a non-zero exit, and reliably captures its status.
+    err=$(curl -fsSL "$url" -o "$dest" 2>&1) || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        return 0
+    fi
+    if [[ $rc -eq 22 ]]; then
+        log "Note: $label not found in repo (optional)"
+    else
+        log "Warning: failed to download $label from $url (curl exit $rc): ${err:-no error output}"
+    fi
+    return 1
+}
+
 # Download all dotfiles for the selected profile and OS
 # Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/linux)
 download_dotfiles() {
@@ -570,14 +628,14 @@ download_dotfiles() {
         local file_url="$DOTFILES_REPO/$os_dir/$profile/$file"
         local dest="$dotfiles_dir/$file"
         log "Downloading $file from $os_dir/$profile"
-        curl -fsSL "$file_url" -o "$dest" 2>/dev/null || log "Note: $file not found in profile (optional)"
+        download_optional_file "$file_url" "$dest" "$file ($os_dir/$profile)" || true
     done
 
     for file in $UNIVERSAL_FILES; do
         local file_url="$DOTFILES_REPO/universal/$file"
         local dest="$dotfiles_dir/$file"
         log "Downloading $file"
-        curl -fsSL "$file_url" -o "$dest" 2>/dev/null || log "Note: $file not found in universal (optional)"
+        download_optional_file "$file_url" "$dest" "$file (universal)" || true
     done
 
     local profile_dirs
@@ -603,10 +661,7 @@ download_universal_directory() {
     mkdir -p "$temp_extract"
 
     local zip_file="$temp_extract/dotfiles.zip"
-    curl -fsSL "$DOTFILES_ARCHIVE_URL" -o "$zip_file" 2>/dev/null || {
-        log "Note: Could not download ProfilePilot archive for $dir_name from $DOTFILES_ARCHIVE_URL (optional)"
-        return
-    }
+    download_optional_file "$DOTFILES_ARCHIVE_URL" "$zip_file" "ProfilePilot archive for $dir_name" || return
 
     (
         cd "$temp_extract"
@@ -1021,6 +1076,11 @@ download_brewfile "$BREWFILE"
 
 install_homebrew
 install_build_tools
+
+# Heal a prior run that installed ca-certificates before awk was available.
+# Must run after install_build_tools (which ensures gawk) and before any TLS
+# operation through Homebrew, starting with brew update below.
+repair_ca_certificates
 
 ###############################################################################
 # INSTALL PACKAGES
