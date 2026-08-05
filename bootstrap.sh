@@ -192,6 +192,34 @@ fatal() {
     exit 1
 }
 
+# Run a command with root privileges, adapting to the environment:
+#   - already root (EUID 0): run directly; sudo is unnecessary and often absent
+#     on minimal/container images (e.g. a root Arch shell with no sudo package).
+#   - not root, sudo present: prepend sudo.
+#   - not root, no sudo: fail with a clear reason rather than a bare
+#     "sudo: command not found" from deep in a package-manager call.
+# Resolved once and cached in SUDO_CMD so the check and any password prompt
+# happen a single time.
+SUDO_CMD=""
+SUDO_RESOLVED=""
+run_as_root() {
+    if [[ -z "$SUDO_RESOLVED" ]]; then
+        if [[ "$(id -u)" -eq 0 ]]; then
+            SUDO_CMD=""
+        elif command -v sudo >/dev/null 2>&1; then
+            SUDO_CMD="sudo"
+        else
+            fatal "This step needs root, but you are not root and sudo is not installed. Re-run as root or install sudo."
+        fi
+        SUDO_RESOLVED="yes"
+    fi
+    if [[ -n "$SUDO_CMD" ]]; then
+        "$SUDO_CMD" "$@"
+    else
+        "$@"
+    fi
+}
+
 # Download a Brewfile from the configured repository
 # Args: $1 - filename (e.g., Brewfile-developer)
 download_brewfile() {
@@ -291,19 +319,19 @@ install_build_tools() {
     if command -v dnf >/dev/null 2>&1; then
         # Fedora / RHEL / CentOS Stream
         # Try group install first; fall back to explicit packages if the group name differs across versions
-        sudo dnf group install -y development-tools 2>/dev/null || \
-            sudo dnf install -y gcc gcc-c++ make || fatal "Failed to install build tools via dnf"
+        run_as_root dnf group install -y development-tools 2>/dev/null || \
+            run_as_root dnf install -y gcc gcc-c++ make || fatal "Failed to install build tools via dnf"
     elif command -v apt-get >/dev/null 2>&1; then
         # Debian / Ubuntu
-        sudo apt-get install -y build-essential || fatal "Failed to install build-essential"
+        run_as_root apt-get install -y build-essential || fatal "Failed to install build-essential"
     elif command -v pacman >/dev/null 2>&1; then
         # Arch / Manjaro. base-devel is a package group; --needed skips ones
         # already present so a re-run is a no-op.
-        sudo pacman -S --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
+        run_as_root pacman -S --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
     elif command -v zypper >/dev/null 2>&1; then
         # openSUSE. The "devel_basis" pattern is the equivalent build-tool bundle.
-        sudo zypper install -y -t pattern devel_basis 2>/dev/null || \
-            sudo zypper install -y gcc gcc-c++ make || fatal "Failed to install build tools via zypper"
+        run_as_root zypper install -y -t pattern devel_basis 2>/dev/null || \
+            run_as_root zypper install -y gcc gcc-c++ make || fatal "Failed to install build tools via zypper"
     else
         fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
     fi
@@ -326,14 +354,14 @@ ensure_linux_packages() {
 
     log "Installing Linux packages: ${missing[*]}"
     if command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+        run_as_root dnf install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update || true
-        sudo apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+        run_as_root apt-get update || true
+        run_as_root apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+        run_as_root pacman -S --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v zypper >/dev/null 2>&1; then
-        sudo zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+        run_as_root zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     else
         fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
     fi
