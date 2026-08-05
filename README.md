@@ -38,7 +38,7 @@ ProfilePilot/
 │   └── profile-minimal/      # macOS Zsh configs for minimal setup
 │       ├── .zprofile
 │       └── .zshrc
-├── linux/                    # Shared across all Linux distros (Debian/Ubuntu, Fedora/RHEL)
+├── linux/                    # Shared across all glibc Linux distros (apt/dnf/pacman/zypper families)
 │   ├── profile-developer/    # Bash configs for full dev environment
 │   │   ├── .bashrc
 │   │   └── .bash_environment
@@ -196,7 +196,7 @@ Because Homebrew's copy is already installed, the fix is `brew link --overwrite`
 - **All Brewfiles** are designed to be cross-platform (macOS and Linux)
 - **Shell configurations** are shell-specific:
   - macOS uses Zsh (`.zprofile`, `.zshrc`)
-  - All Linux distros share one Bash set (`.bashrc`, `.bash_environment`) under `linux/`. Distro- and environment-specific behavior — Debian's `debian_chroot`, Ubuntu's `lesspipe`, and the WSL Edge `BROWSER` export — is guarded inside the files with file/executable tests, so the same file works on Ubuntu, Fedora, and WSL alike.
+  - All Linux distros share one Bash set (`.bashrc`, `.bash_environment`) under `linux/`. Distro- and environment-specific behavior — Debian's `debian_chroot`, Ubuntu's `lesspipe`, and the WSL Edge `BROWSER` export — is guarded inside the files with file/executable tests, so the same file works across the apt, dnf, pacman, and zypper distro families (and WSL) alike.
 - **Aliases** live in a single `universal/.shell_aliases`, sourced by both bash and zsh. Tool-specific entries (git, Terraform, virtualenv) are guarded with `command -v`, so they self-disable when the tool is absent — the same file serves both the minimal and developer profiles.
 - **Universal dotfiles** (`.shell_aliases`, `.gitconfig`, `.gitmessage`) are applied to every profile; the `.poshthemes/` prompt theme is downloaded only for the Developer profile.
 
