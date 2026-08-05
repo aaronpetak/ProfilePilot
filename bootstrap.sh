@@ -326,7 +326,10 @@ install_build_tools() {
         run_as_root apt-get install -y build-essential || fatal "Failed to install build-essential"
     elif command -v pacman >/dev/null 2>&1; then
         # Arch / Manjaro. base-devel is a package group; --needed skips ones
-        # already present so a re-run is a no-op.
+        # already present so a re-run is a no-op. -Sy refreshes the sync DBs
+        # first (empty on a fresh install, which makes -S fail "target not
+        # found").
+        run_as_root pacman -Sy --noconfirm || true
         run_as_root pacman -S --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
     elif command -v zypper >/dev/null 2>&1; then
         # openSUSE. The "devel_basis" pattern is the equivalent build-tool bundle.
@@ -359,8 +362,13 @@ ensure_linux_packages() {
         run_as_root apt-get update || true
         run_as_root apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v pacman >/dev/null 2>&1; then
+        # Refresh the sync databases first: on a fresh Arch/Manjaro system they
+        # are empty, so `pacman -S <pkg>` fails with "target not found" until a
+        # `-Sy` has run. This is the pacman equivalent of `apt-get update` above.
+        run_as_root pacman -Sy --noconfirm || true
         run_as_root pacman -S --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v zypper >/dev/null 2>&1; then
+        run_as_root zypper refresh || true
         run_as_root zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     else
         fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
@@ -1056,6 +1064,21 @@ else
 fi
 
 log "Detected OS: $OS_TYPE ($OS_DOTFILES_DIR)"
+
+###############################################################################
+# ROOT GUARD - Homebrew refuses to install as root, so bail early with guidance
+###############################################################################
+
+# Homebrew hard-refuses to run as root ("Don't run this as root!") and offers no
+# override, so a root shell can never complete provisioning. Catch it here --
+# before we install distro packages or touch anything -- with actionable
+# guidance, rather than failing deep inside the Homebrew installer. The distro
+# package steps still elevate on their own via run_as_root when a normal user
+# has sudo. Allow an explicit escape hatch for anyone who knows what they are
+# doing (e.g. a container where Homebrew is pre-installed).
+if [[ "$(id -u)" -eq 0 && -z "${PROFILEPILOT_ALLOW_ROOT:-}" ]]; then
+    fatal "Running as root, but Homebrew cannot be installed as root. Re-run as a normal user with sudo access (e.g. 'useradd -m -G wheel dev && passwd dev', then run this as that user). Set PROFILEPILOT_ALLOW_ROOT=1 to override only if Homebrew is already usable."
+fi
 
 ###############################################################################
 # PROFILE SELECTION - Ask user which environment to bootstrap
