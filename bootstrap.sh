@@ -192,32 +192,30 @@ fatal() {
     exit 1
 }
 
-# Run a command with root privileges, adapting to the environment:
-#   - already root (EUID 0): run directly; sudo is unnecessary and often absent
-#     on minimal/container images (e.g. a root Arch shell with no sudo package).
-#   - not root, sudo present: prepend sudo.
-#   - not root, no sudo: fail with a clear reason rather than a bare
-#     "sudo: command not found" from deep in a package-manager call.
-# Resolved once and cached in SUDO_CMD so the check and any password prompt
-# happen a single time.
-SUDO_CMD=""
+# Refuse to run as root. Homebrew hard-refuses to install as root ("Don't run
+# this as root!") and offers no override, so a root shell can never complete
+# provisioning. Catch it up front -- before we install distro packages or touch
+# anything -- with actionable guidance, rather than failing deep inside the
+# Homebrew installer. Elevation for the distro package steps is handled by
+# run_as_root (sudo), so the script only ever needs to be a normal sudo user.
+require_non_root() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        fatal "Do not run this as root: Homebrew cannot be installed as root. Re-run as a normal user with sudo access (e.g. 'useradd -m -G wheel dev && passwd dev', then run this as that user)."
+    fi
+}
+
+# Run a command with root privileges. The script itself always runs as a
+# non-root user (enforced by require_non_root), so this prepends sudo; if sudo
+# is missing we fail with a clear reason rather than a bare "sudo: command not
+# found" from deep in a package-manager call. Resolved once and cached.
 SUDO_RESOLVED=""
 run_as_root() {
     if [[ -z "$SUDO_RESOLVED" ]]; then
-        if [[ "$(id -u)" -eq 0 ]]; then
-            SUDO_CMD=""
-        elif command -v sudo >/dev/null 2>&1; then
-            SUDO_CMD="sudo"
-        else
-            fatal "This step needs root, but you are not root and sudo is not installed. Re-run as root or install sudo."
-        fi
+        command -v sudo >/dev/null 2>&1 ||
+            fatal "This step needs root, but sudo is not installed. Install sudo and re-run."
         SUDO_RESOLVED="yes"
     fi
-    if [[ -n "$SUDO_CMD" ]]; then
-        "$SUDO_CMD" "$@"
-    else
-        "$@"
-    fi
+    sudo "$@"
 }
 
 # Download a Brewfile from the configured repository
@@ -326,7 +324,10 @@ install_build_tools() {
         run_as_root apt-get install -y build-essential || fatal "Failed to install build-essential"
     elif command -v pacman >/dev/null 2>&1; then
         # Arch / Manjaro. base-devel is a package group; --needed skips ones
-        # already present so a re-run is a no-op.
+        # already present so a re-run is a no-op. -Sy refreshes the sync DBs
+        # first (empty on a fresh install, which makes -S fail "target not
+        # found").
+        run_as_root pacman -Sy --noconfirm || true
         run_as_root pacman -S --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
     elif command -v zypper >/dev/null 2>&1; then
         # openSUSE. The "devel_basis" pattern is the equivalent build-tool bundle.
@@ -359,8 +360,13 @@ ensure_linux_packages() {
         run_as_root apt-get update || true
         run_as_root apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v pacman >/dev/null 2>&1; then
+        # Refresh the sync databases first: on a fresh Arch/Manjaro system they
+        # are empty, so `pacman -S <pkg>` fails with "target not found" until a
+        # `-Sy` has run. This is the pacman equivalent of `apt-get update` above.
+        run_as_root pacman -Sy --noconfirm || true
         run_as_root pacman -S --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v zypper >/dev/null 2>&1; then
+        run_as_root zypper refresh || true
         run_as_root zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     else
         fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
@@ -1056,6 +1062,12 @@ else
 fi
 
 log "Detected OS: $OS_TYPE ($OS_DOTFILES_DIR)"
+
+###############################################################################
+# ROOT GUARD - Homebrew refuses to install as root, so bail early with guidance
+###############################################################################
+
+require_non_root
 
 ###############################################################################
 # PROFILE SELECTION - Ask user which environment to bootstrap
