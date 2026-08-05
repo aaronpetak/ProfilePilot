@@ -105,11 +105,26 @@ A future profile for hardened/security-focused systems. A `Brewfile-bastion` pac
 The bootstrap script (`bootstrap.sh`) performs these steps:
 
 1. **OS Detection** - Determines if running on macOS or Linux
-2. **Homebrew Installation** - Installs Homebrew if not present
-3. **Profile Selection** - Prompts user to choose Developer or Minimal
-4. **Package Installation** - Downloads and executes the selected Brewfile from `universal/brewfiles/`
+2. **Profile Selection** - Prompts you to choose Developer or Minimal (or preselect non-interactively with `PROFILE=developer`/`PROFILE=minimal`)
+3. **Homebrew Installation** - Installs Homebrew if not present (on Linux it also ensures the build tools Homebrew needs)
+4. **Package Installation** - Downloads the selected Brewfile from `universal/brewfiles/` and installs it, retrying transient failures (see [Package Installation & Retries](#package-installation--retries))
 5. **Dotfiles Application** - Downloads and applies OS and profile-specific dotfiles (see [Existing Dotfiles & Backups](#existing-dotfiles--backups) for how conflicts with files you already have are handled)
-6. **Cleanup (Optional)** - Asks before removing installed packages not in the selected profile (see [Package Cleanup](#package-cleanup))
+6. **Git Personalization** - Fills in your name, email, and GitHub username in the installed `~/.gitconfig` (see [Git Identity](#git-identity))
+7. **Cleanup (Optional)** - Asks before removing installed packages not in the selected profile (see [Package Cleanup](#package-cleanup))
+
+### Package Installation & Retries
+
+Packages are installed with `brew bundle` against the selected Brewfile. Because transient failures (broken pipes mid-download, Cellar lock contention) are common on a fresh machine, the install is retried. If some packages still fail after all attempts, the script reports them and **continues** with the remaining steps (dotfiles, git personalization, cleanup) rather than aborting the whole run — the end-of-run summary flags the incomplete install.
+
+Two environment variables tune the retry loop:
+
+```bash
+# Number of brew bundle attempts (default 3)
+BREW_BUNDLE_ATTEMPTS=5 bash bootstrap.sh
+
+# Seconds to wait between attempts (default 5)
+BREW_BUNDLE_RETRY_DELAY=10 bash bootstrap.sh
+```
 
 ### Existing Dotfiles & Backups
 
@@ -185,13 +200,23 @@ Because Homebrew's copy is already installed, the fix is `brew link --overwrite`
 - **Aliases** live in a single `universal/.shell_aliases`, sourced by both bash and zsh. Tool-specific entries (git, Terraform, virtualenv) are guarded with `command -v`, so they self-disable when the tool is absent — the same file serves both the minimal and developer profiles.
 - **Universal dotfiles** (`.shell_aliases`, `.gitconfig`, `.gitmessage`) are applied to every profile; the `.poshthemes/` prompt theme is downloaded only for the Developer profile.
 
-## Post-Bootstrap Customization
+## Git Identity
 
-Some files require user-specific customization after the bootstrap script completes:
+The shipped `.gitconfig` carries `{FULL NAME}`, `{GITHUB EMAIL}`, and `{GITHUB USERNAME}` placeholders. Rather than leave you to edit them by hand after the run (easy to forget — commits end up attributed to `{FULL NAME}`), the script fills them in for you as its Git Personalization step:
 
-### `.gitconfig`
+- On an interactive terminal it **prompts** for your full name, GitHub email, and GitHub username, then substitutes them into `~/.gitconfig` in place.
+- On a re-run where the placeholders are already gone, it detects that and leaves your `~/.gitconfig` untouched.
 
-The git configuration file is downloaded but **must be customized** with your personal information:
+You can supply the values non-interactively (for unattended runs) with environment variables:
+
+```bash
+GIT_NAME="Your Name" \
+GIT_EMAIL="your.email@example.com" \
+GIT_USERNAME="your-github-username" \
+bash bootstrap.sh
+```
+
+Any field you provide via env is used as-is; any field left unset is prompted for when a terminal is available. If **no** value is provided and there is **no** terminal (e.g. CI), the script leaves the placeholders in place rather than baking in blanks, and prints how to set them later:
 
 ```bash
 git config --global user.name "Your Name"
@@ -199,16 +224,7 @@ git config --global user.email "your.email@example.com"
 git config --global user.username "your-github-username"
 ```
 
-Or edit `~/.gitconfig` directly to add:
-
-```text
-[user]
-    name = Your Name
-    email = your.email@example.com
-    username = your-github-username
-```
-
-**Note:** This file list may grow as profiles are extended with additional customizable configurations.
+**Note:** This behavior may grow as profiles are extended with additional customizable configurations.
 
 ## Maintenance
 
@@ -243,7 +259,7 @@ To create a new profile (e.g., `profile-security`):
 
 ## Notes
 
-- Missing dotfiles in a profile are logged as informational notes but do not cause installation failures
+- A dotfile that simply isn't present in a profile (an HTTP 404) is logged as an informational note and does not cause installation failure. A *download* failure (TLS, DNS, connection) is instead surfaced as a warning, so a real network or certificate problem is never mistaken for a missing-but-optional file.
 - The bootstrap script is idempotent—running it multiple times is safe; unchanged dotfiles are detected and left alone, and each run's backups carry a unique timestamp so they never clobber one another
 - Homebrew packages are **not** version-pinned; each run installs the current version from the tap. Add a `@version` suffix in the Brewfile if you need to pin a specific release.
 - The Oh My Posh prompt theme (`.poshthemes/`) is downloaded only for the Developer profile
