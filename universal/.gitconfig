@@ -1,6 +1,6 @@
 [user]
     name = {FULL NAME}
-    email = {MASKED EMAIL}@users.noreply.github.com
+    email = {GITHUB EMAIL}
     username = {GITHUB USERNAME}
 
 [includeIf "gitdir:~/projects/github/"]
