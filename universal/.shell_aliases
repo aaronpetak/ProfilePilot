@@ -1,0 +1,95 @@
+# .shell_aliases — shared aliases and helper functions for all shells/profiles.
+#
+# This single file is sourced by both bash (.bashrc) and zsh (.zshrc) on every
+# OS and profile. There is intentionally no per-OS or per-profile copy: keep
+# everything portable here and guard anything tool-specific so it silently
+# self-disables when the tool (or the OS feature) is absent. That way the
+# minimal profile can source the exact same file as the developer profile.
+
+# Make it easy to view the configured aliases (works regardless of shell).
+alias aa='cat ~/.shell_aliases'
+
+###############################################################################
+# Portable `ls` colors
+###############################################################################
+# GNU coreutils `ls` uses --color=auto; BSD/macOS `ls` uses -G and errors on
+# --color. Detect which one is on PATH and define the listing aliases with the
+# right color flag so they work identically everywhere.
+if ls --color=auto >/dev/null 2>&1; then
+    # GNU coreutils
+    alias ls='ls -F --color=auto'
+    alias ll='ls -lF --color=auto'
+    alias la='ls -alF --color=auto'
+else
+    # BSD / macOS
+    alias ls='ls -F -G'
+    alias ll='ls -lF -G'
+    alias la='ls -alF -G'
+fi
+
+# Highlight grep matches and skip .svn dirs.
+alias grep='grep --color=auto --exclude-dir=\.svn'
+
+# Print $PATH one entry per line.
+alias path='tr ":" "\n" <<< "$PATH"'
+
+###############################################################################
+# Safer file operations
+###############################################################################
+alias rm='rm -i'
+alias mv='mv -i'
+alias cp='cp -i'
+
+###############################################################################
+# Git (only if git is installed)
+###############################################################################
+if command -v git >/dev/null 2>&1; then
+    # Most commonly used
+    alias gco='git checkout'
+    alias glo='git log --oneline --abbrev-commit --graph --decorate --color'
+    alias gst='git status'
+    alias gsw='git switch'
+    alias new='git checkout -b'
+    alias yolo='git push origin --force-with-lease'
+    alias grpo='git remote prune origin'
+
+    # Less commonly used
+    alias grc='git rebase --continue'
+    alias grs='git rebase --skip'
+    alias gsb='git branch --verbose'
+    alias get='git pull origin master'
+    alias recommit='git commit --amend --no-edit'
+    alias uncommit='git reset --soft HEAD~1'
+    alias unstage='git reset HEAD --'
+    alias yeet='git push origin HEAD'
+fi
+
+###############################################################################
+# Helper functions
+###############################################################################
+# Make a directory (and parents) and cd into it.
+mkcd() {
+    mkdir -p "$@" && cd "${@: -1}" || return
+}
+
+# Create a virtualenv for the current directory (needs virtualenvwrapper).
+if command -v mkvirtualenv >/dev/null 2>&1; then
+    alias here='mkvirtualenv -a "$(pwd)"'
+fi
+
+# Populate a Terraform directory with the standard file layout (needs terraform).
+if command -v terraform >/dev/null 2>&1; then
+    tf_init() {
+        local dir_name
+        dir_name=$(basename "$PWD")
+        touch README.md backend.tf main.tf variables.tf outputs.tf providers.tf locals.tf terraform.tf
+        cat > README.md <<EOF
+# $dir_name
+
+<!-- BEGIN_TF_DOCS -->
+<!-- END_TF_DOCS -->
+
+EOF
+        echo "Terraform files created in $dir_name."
+    }
+fi

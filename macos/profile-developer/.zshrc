@@ -27,10 +27,10 @@ fi
 ###############################################################################
 # Shell Aliases
 ###############################################################################
-# Load custom alias definitions.
+# Load shared aliases and helper functions (portable across shells and OSes).
 # The file is optional and kept separate for clarity.
-if [[ -f "$HOME/.zsh_aliases" ]]; then
-    source "$HOME/.zsh_aliases"
+if [[ -f "$HOME/.shell_aliases" ]]; then
+    source "$HOME/.shell_aliases"
 fi
 
 
