@@ -1,5 +1,10 @@
-tap "jandedobbeleer/oh-my-posh"   # Theme engine for prompt styling
-tap "sinelaw/fresh"               # Fresh text editor tap
+# Third-party taps must be trusted (Homebrew 6.0.0+). `brew bundle` evaluates
+# every formula in a tap when it loads it, so we trust the whole tap rather
+# than a single formula (per-formula trust misses sibling formulae the loader
+# touches, e.g. sinelaw/fresh/fresh).
+tap "jandedobbeleer/oh-my-posh", trusted: true
+tap "sinelaw/fresh", trusted: true
+tap "terraform-linters/tap", trusted: true   # tflint (macOS cask; Linux installed by bootstrap.sh)
 
 # Core CLI Tools
 brew "bat"                        # Modern cat with syntax highlighting
@@ -9,7 +14,7 @@ brew "git"                        # Version control
 brew "gh"                         # GitHub CLI
 brew "htop"                       # Interactive process monitor
 brew "jq"                         # JSON processor
-brew "sinelaw/fresh/fresh-editor" # Fresh terminal text editor
+brew "sinelaw/fresh/fresh"        # Fresh terminal text editor (fresh-editor is an alias brew bundle can't resolve)
 brew "ripgrep"                    # Fast search utility
 brew "tmux"                       # Terminal multiplexer
 brew "tree"                       # Directory tree viewer
@@ -39,7 +44,7 @@ brew "grpcurl"                    # gRPC command-line client
 # IaC / Security
 brew "terraform-docs"             # Terraform docs generator
 brew "tfenv"                      # Terraform version manager
-brew "tflint"                     # Terraform linter
+cask "terraform-linters/tap/tflint" if OS.mac? # Terraform linter (macOS only; Linux handled by bootstrap.sh)
 brew "checkov"                    # IaC security scanner
 brew "trivy"                      # Dependency/image scanner
 brew "semgrep"                    # Code scanning tool
@@ -65,8 +70,8 @@ brew "ansible-lint"               # Ansible linter
 brew "just"                       # Task runner
 brew "jandedobbeleer/oh-my-posh/oh-my-posh"  # Prompt theming engine
 brew "pre-commit"                 # Git hook manager
+cask "1password-cli"              # 1Password command-line tool (macOS + Linux)
 
-# macOS Only (ignored on Linux)
-cask "1password-cli"              # 1Password command-line tool
-cask "meetingbar"                 # Menu app bar for calendar reminders
-cask "monitorcontrol"             # External display brightness
+# macOS Only (guarded so brew bundle skips them on Linux)
+cask "meetingbar" if OS.mac?      # Menu app bar for calendar reminders
+cask "monitorcontrol" if OS.mac?  # External display brightness
