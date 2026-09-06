@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The runner's shellcheck is used directly (ubuntu-latest ships it). We gate at
+# --severity=warning: info-level notes (SC2018/SC2019 about `tr` character
+# ranges) are deliberate for the Bash 3.2 compatibility the script must keep, so
+# gating on them would be noise. Warnings and errors do fail the build.
+jobs:
+  lint-and-test:
+    name: shellcheck + logic tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: shellcheck
+        run: shellcheck --severity=warning bootstrap.sh test/logic_tests.sh
+
+      - name: syntax check
+        run: bash -n bootstrap.sh
+
+      - name: logic tests
+        run: bash test/logic_tests.sh
