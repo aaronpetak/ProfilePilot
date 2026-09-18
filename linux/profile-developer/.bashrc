@@ -33,6 +33,12 @@ shopt -s histappend
 
 # Append commands to the history every time a prompt is shown,
 # instead of after closing the session.
+#
+# This assignment must stay ABOVE the `. ~/.bash_environment` source at the
+# bottom of this file: that is where `oh-my-posh init bash` runs, and the init
+# has to be the last thing that touches PROMPT_COMMAND (it stores its hook in a
+# PROMPT_COMMAND array, and a later string assignment would overwrite only
+# element [0] and drop the hook). See the invariant note in .bash_environment.
 PROMPT_COMMAND='history -a'
 
 # for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
