@@ -21,11 +21,7 @@
     "green": "#98C379"
   },
 
-  "templates": {
-    "detailed_os": "{{ if eq .OS \"darwin\" }}macOS{{ else if ne .Distribution \"unknown\" }}{{ .Distribution | title }}{{ else }}{{ .OS | title }}{{ end }}"
-  },
-
-  "console_title_template": "{{ template \"detailed_os\" . }}",
+  "console_title_template": "{{ if eq .OS \"darwin\" }}macOS{{ else if ne .Distribution \"unknown\" }}{{ .Distribution | title }}{{ else }}{{ .OS | title }}{{ end }}",
 
   "blocks": [
     {

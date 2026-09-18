@@ -88,6 +88,83 @@ check "summary all unknown -> 0"     "$(summary_rc unknown unknown unknown)"    
 check "summary pkg fail dominates"   "$(summary_rc incomplete kept incomplete)"   "1"
 
 # ---------------------------------------------------------------------------
+# Linux developer prompt wiring  (oh-my-posh + PROMPT_COMMAND)
+#
+# `oh-my-posh init bash` stores its _omp_hook in a PROMPT_COMMAND *array*, and
+# bash < 5.1 (4.4 ships on RHEL/Rocky/Alma 8) executes only element [0]. Two
+# invariants keep the prompt rendering on a login shell there:
+#   1. no PROMPT_COMMAND assignment may run after the init, and
+#   2. the array must be flattened to a ';'-joined string right after it.
+# ---------------------------------------------------------------------------
+DEV_BASHRC="$SCRIPT_DIR/../linux/profile-developer/.bashrc"
+DEV_BASHENV="$SCRIPT_DIR/../linux/profile-developer/.bash_environment"
+
+# First line number matching a regex, or empty when absent. Patterns are
+# anchored at the start of the line so the surrounding prose comments (which
+# quote the very lines being located) can't be matched by mistake.
+line_of() {
+    grep -nE -m1 "$2" "$1" | cut -d: -f1
+}
+
+# "yes" when both line numbers exist and $1 comes strictly before $2.
+before() {
+    if [[ -n "$1" && -n "$2" && "$1" -lt "$2" ]]; then echo "yes"; else echo "no"; fi
+}
+
+check "bashrc sets PROMPT_COMMAND before sourcing .bash_environment" \
+    "$(before "$(line_of "$DEV_BASHRC" "^PROMPT_COMMAND='history -a'$")" \
+              "$(line_of "$DEV_BASHRC" '^[[:space:]]*\. ~/\.bash_environment$')")" "yes"
+
+check "brew shellenv runs before oh-my-posh init" \
+    "$(before "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*brew shellenv')" \
+              "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*oh-my-posh init bash')")" "yes"
+
+check "PROMPT_COMMAND flatten sits after oh-my-posh init" \
+    "$(before "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*oh-my-posh init bash')" \
+              "$(line_of "$DEV_BASHENV" '^[[:space:]]*if \[\[ .*declare -p PROMPT_COMMAND')")" "yes"
+
+# The last PROMPT_COMMAND assignment in the file must be the flatten's own; any
+# assignment below it would clobber the hook again on bash 4.4.
+check "flatten is the last PROMPT_COMMAND assignment" \
+    "$(grep -E '^[[:space:]]*PROMPT_COMMAND=' "$DEV_BASHENV" | tail -n1 |
+       sed -e 's/^[[:space:]]*//')" \
+    'PROMPT_COMMAND="$_omp_prompt_command"'
+
+# Behavioral check: run the flatten block itself against a bash 4.4-style
+# array, exactly as oh-my-posh would have left it.
+flatten() {
+    (
+        eval "$1"
+        eval "$(sed -n '/if \[\[ "\$(declare -p PROMPT_COMMAND/,/^    fi$/p' "$DEV_BASHENV")"
+        declare -p PROMPT_COMMAND
+    )
+}
+
+check "flatten joins array into one string" \
+    "$(flatten 'PROMPT_COMMAND=("history -a" "_omp_hook")')" \
+    'declare -- PROMPT_COMMAND="history -a;_omp_hook"'
+check "flatten leaves a string untouched" \
+    "$(flatten 'PROMPT_COMMAND="history -a;_omp_hook"')" \
+    'declare -- PROMPT_COMMAND="history -a;_omp_hook"'
+
+# ---------------------------------------------------------------------------
+# Oh My Posh theme
+# oh-my-posh does not register config keys as named Go templates, so a
+# `{{ template "name" . }}` call always fails with `template not defined` and
+# breaks whichever template invokes it. Template logic must be inlined.
+# ---------------------------------------------------------------------------
+THEME="$SCRIPT_DIR/../universal/.poshthemes/meridian-2.omp.json"
+
+check "theme has no named-template calls" \
+    "$(grep -c 'template \\"' "$THEME")" "0"
+check "theme sets a console title" \
+    "$(grep -c '"console_title_template"' "$THEME")" "1"
+if command -v python3 >/dev/null 2>&1; then
+    check "theme is valid JSON" \
+        "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("ok")' "$THEME" 2>&1)" "ok"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
