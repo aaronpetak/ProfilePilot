@@ -148,6 +148,23 @@ check "flatten leaves a string untouched" \
     'declare -- PROMPT_COMMAND="history -a;_omp_hook"'
 
 # ---------------------------------------------------------------------------
+# Oh My Posh theme
+# oh-my-posh does not register config keys as named Go templates, so a
+# `{{ template "name" . }}` call always fails with `template not defined` and
+# breaks whichever template invokes it. Template logic must be inlined.
+# ---------------------------------------------------------------------------
+THEME="$SCRIPT_DIR/../universal/.poshthemes/meridian-2.omp.json"
+
+check "theme has no named-template calls" \
+    "$(grep -c 'template \\"' "$THEME")" "0"
+check "theme sets a console title" \
+    "$(grep -c '"console_title_template"' "$THEME")" "1"
+if command -v python3 >/dev/null 2>&1; then
+    check "theme is valid JSON" \
+        "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("ok")' "$THEME" 2>&1)" "ok"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
