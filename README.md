@@ -259,6 +259,10 @@ Edit dotfiles in the respective profile directories:
 
 Keep anything portable in `.shell_aliases` and guard tool- or OS-specific behavior with `command -v` or file tests, rather than forking per-OS copies.
 
+**`PROMPT_COMMAND` ordering (Linux/Bash):** `oh-my-posh init bash` stores its `_omp_hook` in a `PROMPT_COMMAND` *array*, so it must be the last thing that touches that variable. Assigning a plain string to an existing array replaces only element `[0]`, which silently drops the hook. Keep every `PROMPT_COMMAND` assignment (such as `history -a`) above the `oh-my-posh init` line, and leave the array-flattening block that follows the init in place — array-form `PROMPT_COMMAND` is only honored from Bash 5.1 on, and Bash 4.4 (RHEL/Rocky/Alma 8) would otherwise never run the hook. `test/logic_tests.sh` enforces both invariants.
+
+**Validating a shell config change:** test it in a real **login** shell — a fresh SSH session or `bash -l` — not just `exec bash`. Login shells read a different file chain (notably, when `~/.bash_profile` exists, Bash ignores `~/.profile` entirely), so `exec bash` can pass while an SSH login fails. For prompt-theme changes also run `oh-my-posh debug 2>&1 | grep ERROR` to surface template errors, which otherwise fail silently.
+
 Changes are applied the next time the bootstrap script is run.
 
 ### Adding New Profiles
@@ -276,6 +280,7 @@ To create a new profile (e.g., `profile-security`):
 - The bootstrap script is idempotent—running it multiple times is safe; unchanged dotfiles are detected and left alone, and each run's backups carry a unique timestamp so they never clobber one another
 - Homebrew packages are **not** version-pinned; each run installs the current version from the tap. Add a `@version` suffix in the Brewfile if you need to pin a specific release.
 - The Oh My Posh prompt theme (`.poshthemes/`) is downloaded only for the Developer profile
+- Homebrew's `shellenv` line is appended to `~/.profile` and, when that file exists, to `~/.bash_profile` as well. RHEL-family systems ship a `~/.bash_profile` by default, and a Bash login shell reads it *instead of* `~/.profile` — so writing only to `~/.profile` would leave `brew` off the PATH on SSH login there. Both writes are guarded against duplication on re-runs.
 
 ## Related Links
 
