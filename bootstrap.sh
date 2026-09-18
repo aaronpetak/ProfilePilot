@@ -230,20 +230,36 @@ download_brewfile() {
     curl -fsSL "$url" -o "$dest" || fatal "Failed to download $file from $url"
 }
 
+# Append a line to a shell startup file unless it is already there. Guarding on
+# content (not on a marker) keeps repeated bootstrap runs from stacking
+# duplicate lines. Creates the file if absent.
+# Args: $1 - file, $2 - line
+append_line_once() {
+    local file="$1" line="$2"
+    if ! grep -qsF "$line" "$file"; then
+        echo "$line" >> "$file"
+    fi
+}
+
 # Configure Homebrew PATH for the current session.
 # .bashrc/.zshrc are overwritten by apply_dotfiles, which already contains the
-# shellenv line; we only write to .profile here for non-interactive shells and
-# to keep brew available throughout the remainder of this script.
+# shellenv line; we only write to the login-shell startup files here for
+# non-interactive shells and to keep brew available throughout the rest of
+# this script.
 # Args: $1 - path to brew executable (e.g., /opt/homebrew/bin/brew)
 setup_brew_path() {
     local brew_path="$1"
     local shellenv_cmd="eval \"\$($brew_path shellenv bash)\""
 
-    # Add to .profile for non-interactive shells, but only once: this branch
-    # runs on every invocation where brew isn't yet on PATH, so an unguarded
-    # append would stack duplicate lines on repeated runs.
-    if ! grep -qsF "$shellenv_cmd" "$HOME/.profile"; then
-        echo "$shellenv_cmd" >> "$HOME/.profile"
+    append_line_once "$HOME/.profile" "$shellenv_cmd"
+
+    # A bash login shell reads ~/.bash_profile *instead of* ~/.profile whenever
+    # the former exists -- and on RHEL-family systems (RHEL/Rocky/Alma/Fedora)
+    # ~/.bash_profile is created by default. Writing only to ~/.profile there
+    # means the shellenv line never runs on an SSH login and brew is missing
+    # from PATH. Mirror the line into ~/.bash_profile when it exists.
+    if [[ -f "$HOME/.bash_profile" ]]; then
+        append_line_once "$HOME/.bash_profile" "$shellenv_cmd"
     fi
 
     # Update PATH in the current session so brew works immediately
