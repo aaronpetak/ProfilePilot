@@ -1,8 +1,8 @@
 # ~/.bashrc: executed by bash(1) for non-login shells.
 #
-# Shared across all Linux distros (Debian/Ubuntu and Fedora/RHEL). Distro-
-# specific blocks below are guarded by file/executable tests, so this single
-# file works unchanged on both families.
+# Shared base for every profile and every Linux distro. The developer profile
+# adds ~/.bashrc.developer, which is sourced last (see the end of this file).
+# Distro-specific blocks are guarded and no-op where inapplicable.
 
 # Homebrew: put the first Homebrew install found on PATH. Done first, before
 # ~/.shell_aliases is sourced, so its command -v guards can see Homebrew tools.
@@ -30,11 +30,12 @@ shopt -s histappend
 # Append commands to the history every time a prompt is shown,
 # instead of after closing the session.
 #
-# This assignment must stay ABOVE the `. ~/.bash_environment` source at the
-# bottom of this file: that is where `oh-my-posh init bash` runs, and the init
-# has to be the last thing that touches PROMPT_COMMAND (it stores its hook in a
-# PROMPT_COMMAND array, and a later string assignment would overwrite only
-# element [0] and drop the hook). See the invariant note in .bash_environment.
+# This assignment and the fallback PS1 below must stay ABOVE the source of
+# ~/.bashrc.developer at the bottom of this file: that is where
+# `oh-my-posh init bash` runs, and the init has to be the last thing that
+# touches PROMPT_COMMAND (it stores its hook in a PROMPT_COMMAND array, and a
+# later string assignment would overwrite only element [0] and drop the hook).
+# Nothing after that source may touch PROMPT_COMMAND or PS1.
 PROMPT_COMMAND='history -a'
 
 # for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
@@ -70,8 +71,10 @@ if ! shopt -oq posix; then
   fi
 fi
 
-# Source .bash_environment for environment variables
-if [ -f ~/.bash_environment ]; then
+# Developer add-on (oh-my-posh, virtualenvwrapper, Go, ...), present only for
+# the developer profile. Keep this the LAST statement in the file so its prompt
+# setup is the final writer of PROMPT_COMMAND and PS1.
+if [ -f ~/.bashrc.developer ]; then
     # shellcheck source=/dev/null
-    . ~/.bash_environment
+    . ~/.bashrc.developer
 fi
