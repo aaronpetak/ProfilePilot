@@ -416,7 +416,7 @@ check "unpack_source_tarball is fatal on a corrupt archive" \
 check "bootstrap never assigns TMPDIR" \
     "$(grep -cE '^[[:space:]]*(export[[:space:]]+)?TMPDIR=' "$BOOTSTRAP")" "0"
 check "bootstrap creates its workspace with mktemp -d" \
-    "$(grep -c '^WORKDIR="\$(mktemp -d)"$' "$BOOTSTRAP")" "1"
+    "$(grep -c '^[[:space:]]*WORKDIR="\$(mktemp -d)"$' "$BOOTSTRAP")" "1"
 
 # ---------------------------------------------------------------------------
 # package:command parsing (missing_linux_packages)
@@ -512,6 +512,48 @@ check "resolve_latest_release_tag fails when curl fails" \
 
 check "tflint download uses a resolved tag, not releases/latest/download" \
     "$(grep -c 'releases/latest/download' "$BOOTSTRAP")" "0"
+
+# ---------------------------------------------------------------------------
+# main() entry point
+# The script is run piped, as a file, and sourced, each against a throwaway HOME
+# and with a failure forced before anything could be installed (an invalid
+# PROFILE, or a stubbed id reporting root). The expected FATAL line proves main
+# ran and got as far as that step; nothing is ever installed.
+# ---------------------------------------------------------------------------
+main_probe() {
+    # $1 = mode (pipe|file|fakeroot-pipe)
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        mkdir -p "$tmp/home" "$tmp/bin"
+        printf '#!/bin/sh\necho 0\n' > "$tmp/bin/id"
+        chmod +x "$tmp/bin/id"
+        case "$1" in
+            pipe)          env HOME="$tmp/home" PROFILE=bogus bash < "$BOOTSTRAP" 2>&1 ;;
+            file)          env HOME="$tmp/home" PROFILE=bogus bash "$BOOTSTRAP" 2>&1 ;;
+            fakeroot-pipe) env HOME="$tmp/home" PATH="$tmp/bin:$PATH" PROFILE=minimal bash < "$BOOTSTRAP" 2>&1 ;;
+        esac
+        echo "rc=$?"
+        test -e "$tmp/home/.local/state/homebrew-restore.log" -o -e "$tmp/home/Library/Logs/homebrew-restore.log" && echo "logged-in-temp-home"
+    )
+}
+
+piped_out="$(main_probe pipe)"
+check "piped script reaches main (invalid PROFILE is fatal)" \
+    "$(printf '%s\n' "$piped_out" | grep -c "FATAL: Invalid PROFILE='bogus'")" "1"
+check "piped script exits non-zero on that fatal" \
+    "$(printf '%s\n' "$piped_out" | grep -c '^rc=1$')" "1"
+check "piped script logs into the temp HOME" \
+    "$(printf '%s\n' "$piped_out" | grep -c '^logged-in-temp-home$')" "1"
+check "file run reaches main (invalid PROFILE is fatal)" \
+    "$(main_probe file | grep -c "FATAL: Invalid PROFILE='bogus'")" "1"
+check "piped script reaches the root guard (stubbed id reports root)" \
+    "$(main_probe fakeroot-pipe | grep -c 'FATAL: Do not run this as root')" "1"
+
+# Sourcing must define functions only: no output, no strict mode left behind,
+# no workspace created.
+check "sourcing bootstrap.sh runs nothing and leaks no set -e" \
+    "$(bash -c 'source "$1"; echo "out:[$-]:${WORKDIR:-none}"' _ "$BOOTSTRAP" | sed 's/\[[^e]*\]/[no-e]/')" "out:[no-e]:none"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Nothing runs at load time except defining functions and defaults, so the file
+# can be sourced (by the tests) without side effects. main() at the bottom does
+# the work, and enables strict mode itself so sourcing does not leak it.
+
+# The path this script was loaded from. Empty when piped (curl | bash), which
+# means "not a checkout": the tarball is used instead. Captured here, with a
+# default, because BASH_SOURCE[0] is unset-sensitive under set -u.
+BOOTSTRAP_SCRIPT="${BASH_SOURCE[0]:-}"
 
 ###############################################################################
 # ENVIRONMENT VARIABLES - USER CUSTOMIZABLE
@@ -69,13 +76,8 @@ brewfile_for_profile() {
 # CONFIGURATION
 ###############################################################################
 
-# Private scratch directory: mktemp -d makes it unique per run and mode 0700, so
-# concurrent runs and other local users cannot interfere. TMPDIR itself is never
-# assigned, since that would redirect every child process's temp files.
-WORKDIR="$(mktemp -d)"
-
-# Remove it on exit. Single-quoted so $WORKDIR is expanded when the trap fires.
-trap 'rm -rf "$WORKDIR"' EXIT
+# Private scratch directory, created by prepare_workspace.
+WORKDIR=""
 
 # Single timestamp for this run, reused for every dotfile backup so that all
 # of a run's backups share one suffix (e.g. .zshrc.bak.20260728-145900) and a
@@ -111,14 +113,18 @@ DOTFILES_CONFLICT="${DOTFILES_CONFLICT:-}"
 # SKIP_CLEANUP=1 opt-out still works and is treated as skip.
 CLEANUP="${CLEANUP:-}"
 
-if [[ "$OSTYPE" == darwin* ]]; then
-    LOGDIR="$HOME/Library/Logs"
-else
-    LOGDIR="$HOME/.local/state"
-fi
+# Log file path, set by init_logging. Empty means log to stdout only.
+LOGFILE=""
 
-mkdir -p "$LOGDIR"
-LOGFILE="$LOGDIR/homebrew-restore.log"
+# Set once by detect_os before anything uses them.
+OS_TYPE=""
+OS_DOTFILES_DIR=""
+
+# Chosen Brewfile name and its full path (set by select_profile / resolve_source)
+# and the directory the dotfiles and Brewfiles are read from.
+BREWFILE=""
+BREWFILE_PATH=""
+SOURCE_DIR=""
 
 ###############################################################################
 # FUNCTIONS
@@ -126,7 +132,13 @@ LOGFILE="$LOGDIR/homebrew-restore.log"
 
 # Log a message with timestamp to both stdout and logfile
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
+    local line
+    line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    if [[ -n "$LOGFILE" ]]; then
+        echo "$line" | tee -a "$LOGFILE"
+    else
+        echo "$line"
+    fi
 }
 
 # True if we can actually open the controlling terminal to prompt the user.
@@ -1141,187 +1153,6 @@ personalize_gitconfig() {
     verify_git_identity "$have_name" "$have_email" "personalized"
 }
 
-# Print an end-of-run summary reflecting what each step actually did, and return
-# a non-zero status if anything genuinely failed. Only unresolved package
-# failures count as a failure: the package step deliberately continues past them
-# rather than aborting, so without this the run would otherwise end on an
-# unconditional "success" message. Kept dotfiles and an un-personalized gitconfig
-# are legitimate user/environment states, so they are reported but do not fail
-# the run. Returns 0 on success, 1 if packages are incomplete.
-print_summary() {
-    local rc=0
-    log "----- Summary -----"
-
-    case "$STATUS_PACKAGES" in
-        ok)         log "  Packages:  all Brewfile dependencies installed." ;;
-        incomplete) log "  Packages:  FAILED - some dependencies could not be installed (see log above)."; rc=1 ;;
-        *)          log "  Packages:  not attempted." ;;
-    esac
-
-    case "$STATUS_DOTFILES" in
-        applied)   log "  Dotfiles:  applied." ;;
-        kept)      log "  Dotfiles:  kept your existing files; profile versions not installed (set DOTFILES_CONFLICT=overwrite to apply them)." ;;
-        not-found) log "  Dotfiles:  profile directory not found; none applied." ;;
-        *)         log "  Dotfiles:  not attempted." ;;
-    esac
-
-    case "$STATUS_GITCONFIG" in
-        personalized) log "  Gitconfig: identity written to ~/.gitconfig.local." ;;
-        already)      log "  Gitconfig: identity already in ~/.gitconfig.local; left unchanged." ;;
-        incomplete)   log "  Gitconfig: git identity incomplete or not read by ~/.gitconfig; see the notes above (needs user.name/user.email in ~/.gitconfig.local and an include in ~/.gitconfig)." ;;
-        absent)       log "  Gitconfig: ~/.gitconfig not present; skipped." ;;
-        *)            log "  Gitconfig: not attempted." ;;
-    esac
-
-    if [[ "$rc" -eq 0 ]]; then
-        log "Environment restored successfully."
-    else
-        log "Environment restored with errors; see the summary above."
-    fi
-    return "$rc"
-}
-
-###############################################################################
-# OS DETECTION - Determine platform and set appropriate variables
-###############################################################################
-
-if [[ "$OSTYPE" == darwin* ]]; then
-    OS_TYPE="macos"
-    OS_DOTFILES_DIR="macos"
-elif [[ "$OSTYPE" == linux-musl* ]]; then
-    # musl-based distros (Alpine and derivatives) are intentionally out of scope:
-    # this whole script is built on Homebrew, and Homebrew on Linux requires
-    # glibc (>= 2.13, with its own glibc formula filling 2.13-2.38). It does not
-    # support musl. Fail with a clear reason rather than the generic message.
-    fatal "Unsupported OS: $OSTYPE. This installer requires a glibc-based Linux (Homebrew does not support musl/Alpine)."
-elif [[ "$OSTYPE" == linux-gnu* || "$OSTYPE" == linux ]]; then
-    # Most distros' bash reports OSTYPE=linux-gnu, but some (notably SUSE) are
-    # compiled to report a bare "linux". The musl case is already excluded above,
-    # so a bare "linux" here is glibc.
-    OS_TYPE="linux"
-    # All glibc Linux distros share a single dotfiles set (Debian/Ubuntu,
-    # Fedora/RHEL, Arch, openSUSE). Distro-specific behavior (Debian chroot,
-    # lesspipe, WSL browser export) is guarded inside those files, so no
-    # per-distro directory is needed.
-    OS_DOTFILES_DIR="linux"
-else
-    fatal "Unsupported OS: $OSTYPE"
-fi
-
-log "Detected OS: $OS_TYPE ($OS_DOTFILES_DIR)"
-
-###############################################################################
-# ROOT GUARD - Homebrew refuses to install as root, so bail early with guidance
-###############################################################################
-
-require_non_root
-
-###############################################################################
-# PROFILE SELECTION - Ask user which environment to bootstrap
-###############################################################################
-
-# Profile can be preselected non-interactively via the PROFILE env var
-# (developer|minimal), which is required for unattended runs (CI, containers,
-# curl|bash with no TTY). Otherwise we present the interactive menu, but only
-# when a controlling terminal is actually available: reading from /dev/tty with
-# none present fails under `set -e` and would abort the whole run here, before
-# any of the non-interactive knobs (DOTFILES_CONFLICT, CLEANUP) could apply.
-BREWFILE=""
-if [[ -n "${PROFILE:-}" ]]; then
-    BREWFILE="$(brewfile_for_profile "$PROFILE")"
-    [[ -n "$BREWFILE" ]] || fatal "Invalid PROFILE='$PROFILE' (expected: developer or minimal)."
-    log "Profile preselected via PROFILE=$PROFILE"
-elif tty_available; then
-    echo ""
-    echo "Select environment profile:"
-    echo "  1) Developer Workstation"
-    echo "  2) Minimal Host"
-    echo ""
-
-    read -rp "Enter 1 or 2: " choice < /dev/tty
-
-    case "$choice" in
-        1) BREWFILE="Brewfile-developer" ;;
-        2) BREWFILE="Brewfile-minimal" ;;
-        *) fatal "Invalid choice." ;;
-    esac
-else
-    fatal "No profile selected and no interactive terminal available. Set PROFILE=developer or PROFILE=minimal to run unattended."
-fi
-
-log "Selected Brewfile: $BREWFILE"
-
-###############################################################################
-# SOURCE - the local checkout, or one pinned tarball
-###############################################################################
-
-if SOURCE_DIR="$(local_checkout_dir "${BASH_SOURCE[0]:-}")"; then
-    log "Installing from local checkout: $SOURCE_DIR"
-else
-    # curl, tar and gzip are needed to fetch and unpack the tarball.
-    if [[ "$OS_TYPE" == "linux" ]]; then
-        ensure_linux_packages curl tar gzip
-    fi
-    SOURCE_DIR="$WORKDIR/source"
-    fetch_source_tarball "$SOURCE_DIR"
-fi
-
-BREWFILE_PATH="$SOURCE_DIR/universal/brewfiles/$BREWFILE"
-[[ -f "$BREWFILE_PATH" ]] || fatal "Brewfile not found: $BREWFILE_PATH"
-
-###############################################################################
-# INSTALL PACKAGE MANAGER & BUILD TOOLS
-###############################################################################
-
-install_homebrew
-warn_stale_brew_lines
-install_build_tools
-
-# Heal a prior run that installed ca-certificates before awk was available.
-# Must run after install_build_tools (which ensures gawk) and before any TLS
-# operation through Homebrew, starting with brew update below.
-repair_ca_certificates
-
-###############################################################################
-# INSTALL PACKAGES
-###############################################################################
-
-log "Updating Homebrew..."
-brew update || log "Warning: brew update failed; continuing with the package index already on this machine."
-
-# Install packages, retrying transient failures and continuing past any that
-# persist (see install_brewfile_packages). This intentionally never aborts the
-# run, so dotfiles, tflint, and cleanup still happen even if a package fails.
-install_brewfile_packages "$BREWFILE_PATH"
-
-# tflint is a macOS-only cask in Homebrew; install it separately on Linux for
-# the developer profile.
-if [[ "$BREWFILE" == "Brewfile-developer" ]]; then
-    install_tflint_linux
-fi
-
-###############################################################################
-# APPLY ProfilePilot - Download and install shell configs and app settings
-###############################################################################
-
-DOTFILES_PROFILE="profile-${BREWFILE#Brewfile-}"
-SHELL_TYPE="$(shell_for_os "$OS_TYPE")"
-stage_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
-# Preserve an identity from a pre-existing ~/.gitconfig before it can be replaced.
-migrate_gitconfig_identity
-apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
-if [[ "$OS_TYPE" == "macos" ]]; then
-    ensure_zprofile_brew "$(brew --prefix)/bin/brew"
-fi
-
-# Write the git identity to ~/.gitconfig.local (prompting if needed) and verify
-# git can read it through ~/.gitconfig.
-personalize_gitconfig
-
-###############################################################################
-# CLEANUP PACKAGES
-###############################################################################
-
 # Resolve how to handle installed packages not listed in the Brewfile into the
 # global CLEANUP_MODE (remove|skip). Mirrors the dotfiles conflict handling:
 # honors $CLEANUP (remove|skip|prompt), keeps the older $SKIP_CLEANUP=1 working
@@ -1376,50 +1207,244 @@ determine_cleanup_mode() {
     esac
 }
 
-FORMULA_COUNT=$(brew list --formula | wc -l | tr -d ' ')
-CASK_COUNT=$(brew list --cask 2>/dev/null | wc -l | tr -d ' ')
-TOTAL_PKGS=$((FORMULA_COUNT + CASK_COUNT))
+# Print an end-of-run summary reflecting what each step actually did, and return
+# a non-zero status if anything genuinely failed. Only unresolved package
+# failures count as a failure: the package step deliberately continues past them
+# rather than aborting, so without this the run would otherwise end on an
+# unconditional "success" message. Kept dotfiles and an un-personalized gitconfig
+# are legitimate user/environment states, so they are reported but do not fail
+# the run. Returns 0 on success, 1 if packages are incomplete.
+print_summary() {
+    local rc=0
+    log "----- Summary -----"
 
-if [[ "$TOTAL_PKGS" -eq 0 ]]; then
-    log "No packages installed; cleanup unnecessary."
-else
-    log "Checking for packages not listed in $BREWFILE ($TOTAL_PKGS currently installed)..."
+    case "$STATUS_PACKAGES" in
+        ok)         log "  Packages:  all Brewfile dependencies installed." ;;
+        incomplete) log "  Packages:  FAILED - some dependencies could not be installed (see log above)."; rc=1 ;;
+        *)          log "  Packages:  not attempted." ;;
+    esac
 
-    # Without --force, `brew bundle cleanup` only reports what it would remove
-    # and touches nothing. Use it to preview the candidates so the user (or the
-    # log, in non-interactive runs) can see exactly what is at stake before any
-    # destructive pass.
-    CLEANUP_PREVIEW=$(brew bundle cleanup --file="$BREWFILE_PATH" 2>&1) || true
+    case "$STATUS_DOTFILES" in
+        applied)   log "  Dotfiles:  applied." ;;
+        kept)      log "  Dotfiles:  kept your existing files; profile versions not installed (set DOTFILES_CONFLICT=overwrite to apply them)." ;;
+        not-found) log "  Dotfiles:  profile directory not found; none applied." ;;
+        *)         log "  Dotfiles:  not attempted." ;;
+    esac
 
-    if [[ -z "$CLEANUP_PREVIEW" ]]; then
-        log "Nothing to clean up; every installed package is part of $BREWFILE."
+    case "$STATUS_GITCONFIG" in
+        personalized) log "  Gitconfig: identity written to ~/.gitconfig.local." ;;
+        already)      log "  Gitconfig: identity already in ~/.gitconfig.local; left unchanged." ;;
+        incomplete)   log "  Gitconfig: git identity incomplete or not read by ~/.gitconfig; see the notes above (needs user.name/user.email in ~/.gitconfig.local and an include in ~/.gitconfig)." ;;
+        absent)       log "  Gitconfig: ~/.gitconfig not present; skipped." ;;
+        *)            log "  Gitconfig: not attempted." ;;
+    esac
+
+    if [[ "$rc" -eq 0 ]]; then
+        log "Environment restored successfully."
     else
-        log "The following are installed but not listed in $BREWFILE:"
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && log "  $line"
-        done <<< "$CLEANUP_PREVIEW"
-
-        determine_cleanup_mode
-        if [[ "$CLEANUP_MODE" == "remove" ]]; then
-            log "Removing packages not listed in $BREWFILE..."
-            brew bundle cleanup --file="$BREWFILE_PATH" --force
-            log "Cleanup complete."
-        else
-            log "Keeping all installed packages; nothing was removed. (Set CLEANUP=remove to uninstall packages not in the profile.)"
-        fi
+        log "Environment restored with errors; see the summary above."
     fi
-fi
+    return "$rc"
+}
 
-###############################################################################
-# COMPLETION
-###############################################################################
+# Create the private scratch directory (mode 0700, unique per run) and remove it
+# on exit. TMPDIR itself is never assigned: that would redirect every child
+# process's temp files. The trap is single-quoted so $WORKDIR expands when it
+# fires.
+prepare_workspace() {
+    WORKDIR="$(mktemp -d)"
+    trap 'rm -rf "$WORKDIR"' EXIT
+}
 
-# Report what actually happened. print_summary returns non-zero if packages
-# failed to install, so the run's exit status reflects real failures instead of
-# always reporting success. Calling it as an `if` condition keeps `set -e` from
-# aborting on that non-zero return before we can exit with the intended status.
-if print_summary; then
-    exit 0
-else
-    exit 1
+# Choose the log file and make sure its directory exists.
+init_logging() {
+    local logdir
+    if [[ "$OSTYPE" == darwin* ]]; then
+        logdir="$HOME/Library/Logs"
+    else
+        logdir="$HOME/.local/state"
+    fi
+    mkdir -p "$logdir"
+    LOGFILE="$logdir/homebrew-restore.log"
+}
+
+# Determine the platform once, setting OS_TYPE and OS_DOTFILES_DIR.
+detect_os() {
+    if [[ "$OSTYPE" == darwin* ]]; then
+        OS_TYPE="macos"
+        OS_DOTFILES_DIR="macos"
+    elif [[ "$OSTYPE" == linux-musl* ]]; then
+        # musl-based distros (Alpine and derivatives) are intentionally out of
+        # scope: this whole script is built on Homebrew, and Homebrew on Linux
+        # requires glibc. Fail with a clear reason rather than the generic one.
+        fatal "Unsupported OS: $OSTYPE. This installer requires a glibc-based Linux (Homebrew does not support musl/Alpine)."
+    elif [[ "$OSTYPE" == linux-gnu* || "$OSTYPE" == linux ]]; then
+        # Most distros' bash reports OSTYPE=linux-gnu, but some (notably SUSE)
+        # report a bare "linux". The musl case is excluded above, so a bare
+        # "linux" here is glibc. All glibc Linux distros share one dotfiles set.
+        OS_TYPE="linux"
+        OS_DOTFILES_DIR="linux"
+    else
+        fatal "Unsupported OS: $OSTYPE"
+    fi
+    log "Detected OS: $OS_TYPE ($OS_DOTFILES_DIR)"
+}
+
+# Pick the Brewfile, setting BREWFILE. The profile can be preselected with the
+# PROFILE env var (developer|minimal), which unattended runs (CI, containers,
+# curl|bash with no TTY) need. Otherwise show the menu, but only when a
+# controlling terminal is actually available: reading /dev/tty with none present
+# would abort the run before the non-interactive knobs (DOTFILES_CONFLICT,
+# CLEANUP) could apply. Menu choices map through brewfile_for_profile so the
+# valid profiles are defined in one place.
+select_profile() {
+    local profile choice
+    BREWFILE=""
+    if [[ -n "${PROFILE:-}" ]]; then
+        BREWFILE="$(brewfile_for_profile "$PROFILE")"
+        [[ -n "$BREWFILE" ]] || fatal "Invalid PROFILE='$PROFILE' (expected: developer or minimal)."
+        log "Profile preselected via PROFILE=$PROFILE"
+    elif tty_available; then
+        echo ""
+        echo "Select environment profile:"
+        echo "  1) Developer Workstation"
+        echo "  2) Minimal Host"
+        echo ""
+
+        read -rp "Enter 1 or 2: " choice < /dev/tty
+
+        case "$choice" in
+            1) profile="developer" ;;
+            2) profile="minimal" ;;
+            *) fatal "Invalid choice." ;;
+        esac
+        BREWFILE="$(brewfile_for_profile "$profile")"
+    else
+        fatal "No profile selected and no interactive terminal available. Set PROFILE=developer or PROFILE=minimal to run unattended."
+    fi
+
+    log "Selected Brewfile: $BREWFILE"
+}
+
+# Locate the files to install from: the local checkout, or one pinned tarball.
+# Sets SOURCE_DIR and BREWFILE_PATH.
+resolve_source() {
+    if SOURCE_DIR="$(local_checkout_dir "$BOOTSTRAP_SCRIPT")"; then
+        log "Installing from local checkout: $SOURCE_DIR"
+    else
+        # curl, tar and gzip are needed to fetch and unpack the tarball.
+        if [[ "$OS_TYPE" == "linux" ]]; then
+            ensure_linux_packages curl tar gzip
+        fi
+        SOURCE_DIR="$WORKDIR/source"
+        fetch_source_tarball "$SOURCE_DIR"
+    fi
+
+    BREWFILE_PATH="$SOURCE_DIR/universal/brewfiles/$BREWFILE"
+    [[ -f "$BREWFILE_PATH" ]] || fatal "Brewfile not found: $BREWFILE_PATH"
+}
+
+# Update Homebrew and install the selected Brewfile's packages.
+install_packages() {
+    log "Updating Homebrew..."
+    brew update || log "Warning: brew update failed; continuing with the package index already on this machine."
+
+    # Retries transient failures and continues past any that persist (see
+    # install_brewfile_packages), so dotfiles, tflint and cleanup still happen.
+    install_brewfile_packages "$BREWFILE_PATH"
+
+    # tflint is a macOS-only cask in Homebrew; install it separately on Linux
+    # for the developer profile.
+    if [[ "$BREWFILE" == "Brewfile-developer" ]]; then
+        install_tflint_linux
+    fi
+}
+
+# Stage and apply the profile's dotfiles, then set up git identity.
+apply_profile() {
+    local dotfiles_profile shell_type
+    dotfiles_profile="profile-${BREWFILE#Brewfile-}"
+    shell_type="$(shell_for_os "$OS_TYPE")"
+    stage_dotfiles "$dotfiles_profile" "$OS_DOTFILES_DIR"
+    # Preserve an identity from a pre-existing ~/.gitconfig before it can be replaced.
+    migrate_gitconfig_identity
+    apply_dotfiles "$dotfiles_profile" "$shell_type" "$OS_DOTFILES_DIR"
+    if [[ "$OS_TYPE" == "macos" ]]; then
+        ensure_zprofile_brew "$(brew --prefix)/bin/brew"
+    fi
+
+    # Write the git identity to ~/.gitconfig.local (prompting if needed) and
+    # verify git can read it through ~/.gitconfig.
+    personalize_gitconfig
+}
+
+# Offer to uninstall packages that are installed but not in the Brewfile.
+# `brew bundle cleanup` without --force only previews, so use it to show the
+# candidates; an empty preview means there is nothing to clean up.
+cleanup_packages() {
+    local preview line
+    log "Checking for packages not listed in $BREWFILE..."
+    preview=$(brew bundle cleanup --file="$BREWFILE_PATH" 2>&1) || true
+
+    if [[ -z "$preview" ]]; then
+        log "Nothing to clean up; every installed package is part of $BREWFILE."
+        return 0
+    fi
+
+    log "The following are installed but not listed in $BREWFILE:"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && log "  $line"
+    done <<< "$preview"
+
+    determine_cleanup_mode
+    if [[ "$CLEANUP_MODE" == "remove" ]]; then
+        log "Removing packages not listed in $BREWFILE..."
+        brew bundle cleanup --file="$BREWFILE_PATH" --force
+        log "Cleanup complete."
+    else
+        log "Keeping all installed packages; nothing was removed. (Set CLEANUP=remove to uninstall packages not in the profile.)"
+    fi
+}
+
+main() {
+    set -euo pipefail
+
+    prepare_workspace
+    init_logging
+    detect_os
+
+    # Homebrew refuses to install as root, so bail early with guidance.
+    require_non_root
+
+    select_profile
+    resolve_source
+
+    install_homebrew
+    warn_stale_brew_lines
+    install_build_tools
+
+    # Heal a prior run that installed ca-certificates before awk was available.
+    # Must run after install_build_tools (which ensures gawk) and before any TLS
+    # operation through Homebrew, starting with brew update.
+    repair_ca_certificates
+
+    install_packages
+    apply_profile
+    cleanup_packages
+
+    # Report what actually happened. print_summary returns non-zero if packages
+    # failed to install, so the exit status reflects real failures. Used as an
+    # `if` condition so `set -e` does not abort before we pick the exit status.
+    if print_summary; then
+        exit 0
+    else
+        exit 1
+    fi
+}
+
+# Run main only when executed (as a file, via bash <(...), or piped), not when
+# sourced. When piped, BASH_SOURCE[0] is empty and $0 is "bash", so fall back to
+# $0 (plain ${BASH_SOURCE[0]} would be unbound under set -u).
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    main "$@"
 fi
