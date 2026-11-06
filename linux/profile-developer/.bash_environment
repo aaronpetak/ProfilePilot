@@ -4,9 +4,8 @@ export PROJECTS_HOME=$HOME/projects
 # Python Virtualenv
 # virtualenv and virtualenvwrapper are installed via Homebrew, so we let
 # virtualenvwrapper discover the virtualenv binary from PATH rather than
-# hardcoding a path. (VIRTUALENVWRAPPER_PYTHON still points at the system
-# python3, which virtualenvwrapper itself runs under.)
-export VIRTUALENVWRAPPER_PYTHON=/usr/bin/python3
+# hardcoding a path. virtualenvwrapper.sh picks its own interpreter, so
+# VIRTUALENVWRAPPER_PYTHON is not set here.
 export WORKON_HOME=$HOME/.virtualenvs
 
 # Guard the source so a shell doesn't error out if virtualenvwrapper isn't
@@ -14,9 +13,6 @@ export WORKON_HOME=$HOME/.virtualenvs
 if [ -n "${HOMEBREW_PREFIX:-}" ] && [ -f "$HOMEBREW_PREFIX/bin/virtualenvwrapper.sh" ]; then
     source "$HOMEBREW_PREFIX/bin/virtualenvwrapper.sh"
 fi
-
-# Poetry
-#export PATH=$PATH:$HOME/.poetry/bin
 
 # Golang Environment
 # Go is installed via Homebrew, which puts `go` on PATH and lets the toolchain
@@ -50,12 +46,14 @@ if command -v oh-my-posh >/dev/null 2>&1 && [ "$TERM_PROGRAM" != "vscode" ]; the
         unset _omp_prompt_command
     fi
 else
-    PS1="\[$CYAN\]\[$GREEN\][\w]$(__git_ps1)\$ \[$NORMAL\]"
-    PS2='\[$GREEN\]continue-> $NORMAL'
+    # No oh-my-posh: keep the plain prompt .bashrc already set, but add git
+    # branch info when git's prompt helper is loaded.
+    if type __git_ps1 >/dev/null 2>&1; then
+        PS1='[\w]$(__git_ps1 " (%s)")\$ '
+    else
+        PS1='[\w]\$ '
+    fi
 fi
-
-# TFenv: Terraform version management
-export PATH=$PATH:$HOME/.tfenv/bin
 
 # Browser Settings (WSL only)
 # Point the browser at the Windows Edge binary when running under WSL. Guarded
@@ -63,6 +61,3 @@ export PATH=$PATH:$HOME/.tfenv/bin
 if [ -x "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" ]; then
     export BROWSER="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 fi
-
-# Python UV
-# eval "$(uv generate-shell-completion bash)"

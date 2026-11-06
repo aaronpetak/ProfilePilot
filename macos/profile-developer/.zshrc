@@ -52,7 +52,6 @@ fi
 # and the tool is installed. Avoids errors on fresh systems.
 if [[ -d "$HOME/.virtualenvs" ]] && command -v virtualenvwrapper.sh >/dev/null 2>&1; then
     export WORKON_HOME="$HOME/.virtualenvs"
-    export VIRTUALENVWRAPPER_PYTHON="$(command -v python3)"
     source "$(command -v virtualenvwrapper.sh)"
 fi
 
