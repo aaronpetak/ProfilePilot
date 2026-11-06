@@ -1019,6 +1019,43 @@ rc=1"
         "$(aliases_probe "$sh" 'alias get="echo shadow"; . "$ALIASES"; alias get 2>/dev/null | wc -l | tr -d " "; type get | head -n1 | grep -c function' | tr '\n' ' ')" "0 1 "
 done
 
+# Editor selection: the block in each base rc, run with a stubbed PATH.
+# $1 shell, $2 rc file, $3 space-separated stub commands to create,
+# $4 extra env assignments. Prints "EDITOR|VISUAL".
+editor_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        mkdir -p "$tmp/bin"
+        for c in $3; do printf '#!/bin/sh\n' > "$tmp/bin/$c"; chmod +x "$tmp/bin/$c"; done
+        block="$(sed -n '/^# Default editor, unless/,/^export VISUAL/p' "$2")"
+        # shellcheck disable=SC2086  # $4 is a list of NAME=value words.
+        env -i PATH="$tmp/bin" $4 "$(command -v "$1")" -c "$block; printf '%s|%s' \"\$EDITOR\" \"\$VISUAL\""
+    )
+}
+for sh_rc in "bash:$SCRIPT_DIR/../linux/.bashrc" "zsh:$SCRIPT_DIR/../macos/.zshrc"; do
+    sh="${sh_rc%%:*}"; rc="${sh_rc#*:}"
+    command -v "$sh" >/dev/null 2>&1 || continue
+    check "$sh editor: code present, not SSH -> code --wait" \
+        "$(editor_probe "$sh" "$rc" "code vim" "")" "code --wait|code --wait"
+    check "$sh editor: code present over SSH_CONNECTION -> vim" \
+        "$(editor_probe "$sh" "$rc" "code vim" "SSH_CONNECTION=1.2.3.4")" "vim|vim"
+    check "$sh editor: code present over SSH_TTY -> vim" \
+        "$(editor_probe "$sh" "$rc" "code vim" "SSH_TTY=/dev/pts/1")" "vim|vim"
+    check "$sh editor: no code -> vim" \
+        "$(editor_probe "$sh" "$rc" "vim" "")" "vim|vim"
+    check "$sh editor: neither code nor vim -> vi" \
+        "$(editor_probe "$sh" "$rc" "" "")" "vi|vi"
+    check "$sh editor: preset EDITOR is kept, VISUAL follows it" \
+        "$(editor_probe "$sh" "$rc" "code vim" "EDITOR=nano")" "nano|nano"
+    check "$sh editor: preset VISUAL is kept" \
+        "$(editor_probe "$sh" "$rc" "vim" "VISUAL=emacs")" "vim|emacs"
+done
+check "gitconfig no longer sets core.editor" \
+    "$(grep -c 'editor' "$SCRIPT_DIR/../universal/.gitconfig")" "0"
+check "macOS developer add-on no longer exports EDITOR" \
+    "$(grep -c 'EDITOR' "$SCRIPT_DIR/../macos/profile-developer/.zshrc.developer")" "0"
+
 # ---------------------------------------------------------------------------
 # Arch: one full-upgrade transaction, failure is fatal
 # ---------------------------------------------------------------------------
