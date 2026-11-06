@@ -4,6 +4,8 @@ All notable changes to ProfilePilot are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-06
+
 ### Added
 
 - Tarball mode can install from a private repository. When the anonymous download gets a 404, it retries once through the GitHub API with a token from `GH_TOKEN`, `GITHUB_TOKEN`, `gh auth token` or a hidden prompt. The token is passed to curl on stdin and never logged. Public repositories still download anonymously.
@@ -27,5 +29,6 @@ First tagged release.
 - An end-of-run summary that reports packages, dotfiles, git identity and cleanup separately, and exits non-zero when packages fail to install. When the run had to add `brew` to `PATH`, it also says how to get `brew` in your current terminal.
 - CI: shellcheck and syntax checks, logic tests on Ubuntu and on macOS's stock bash 3.2, and end-to-end smoke runs on Ubuntu, Fedora, Rocky Linux 8, Arch, openSUSE Tumbleweed and macOS.
 
-[Unreleased]: https://github.com/aaronpetak/ProfilePilot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aaronpetak/ProfilePilot/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/aaronpetak/ProfilePilot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aaronpetak/ProfilePilot/releases/tag/v0.1.0
