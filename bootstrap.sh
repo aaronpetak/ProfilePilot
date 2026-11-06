@@ -106,9 +106,9 @@ WORKDIR=""
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 
 # End-of-run status. Each major step records its outcome here so the final
-# summary reflects what actually happened rather than an unconditional
-# "success". Package failures are a real failure (the install step deliberately
-# continues past them instead of aborting), so they flip the exit code;
+# summary reflects what actually happened. Package failures are a real failure
+# (the install step deliberately continues past them instead of aborting), so
+# they flip the exit code;
 # kept dotfiles and un-personalized gitconfig are legitimate, non-error states
 # that are reported but do not fail the run. Values are set at each step's
 # decision point; "unknown" means the step did not run.
@@ -130,8 +130,8 @@ DOTFILES_CONFLICT="${DOTFILES_CONFLICT:-}"
 #   skip   - keep them
 #   prompt - ask interactively (requires a TTY)
 # Unset means: prompt when a TTY is available, otherwise skip, so packages a
-# user installed separately are never uninstalled unattended. The older
-# SKIP_CLEANUP=1 opt-out still works and is treated as skip.
+# user installed separately are never uninstalled unattended. SKIP_CLEANUP=1 is
+# also accepted and treated as skip.
 CLEANUP="${CLEANUP:-}"
 
 # Log file path, set by init_logging. Empty means log to stdout only.
@@ -368,9 +368,9 @@ ensure_zprofile_brew() {
 }
 
 # Warn about shellenv lines in ~/.profile and ~/.bash_profile that point at a
-# brew which no longer exists (e.g. written for the wrong prefix by an earlier
-# version). They fail with "No such file" at every login; we only report them,
-# never edit the user's startup files.
+# brew which does not exist (e.g. written for a different prefix). They fail
+# with "No such file" at every login; we only report them, never edit the
+# user's startup files.
 warn_stale_brew_lines() {
     local file brew_path
     for file in "$HOME/.profile" "$HOME/.bash_profile"; do
@@ -713,7 +713,7 @@ resolve_unlinked_formulae() {
                 log "  That file was installed outside Homebrew (a manual copy or another package manager)."
             fi
 
-            # #1: offer to hand the command to Homebrew now. `--overwrite`
+            # Offer to hand the command to Homebrew now. `--overwrite`
             # replaces the foreign file, so we ask first and never do it
             # unattended (no TTY -> just print the manual steps below).
             linked=""
@@ -734,7 +734,7 @@ resolve_unlinked_formulae() {
                 fi
             fi
 
-            # #2: if we didn't (or couldn't) link, print the paired manual fix.
+            # If we didn't (or couldn't) link, print the paired manual fix.
             # Homebrew's copy is already installed, so the brew step is `link
             # --overwrite`, not a reinstall.
             if [[ -z "$linked" ]]; then
@@ -781,11 +781,10 @@ install_brewfile_packages() {
         # HOMEBREW_DOWNLOAD_CONCURRENCY=1 forces serial downloads (default is
         # auto = 2x CPU cores). Parallel downloads draw multiple live progress
         # spinners at once, which interleave into staircased/cascading output on
-        # some terminals, and race on shared cache temp files -- we saw both a
-        # "go process has already locked" cellar race and a libidn2
-        # ".incomplete manifest" rmdir race on the first attempt. Serializing
-        # trades a little download speed for readable output and far fewer
-        # transient failures. HOMEBREW_NO_EMOJI drops the success badge that is
+        # some terminals, and race on shared cache temp files (a "go process
+        # has already locked" cellar race, an ".incomplete manifest" rmdir
+        # race). Serializing trades a little download speed for readable output
+        # and far fewer transient failures. HOMEBREW_NO_EMOJI drops the success badge that is
         # part of the same spinner drawing.
         if HOMEBREW_DOWNLOAD_CONCURRENCY=1 \
             HOMEBREW_NO_EMOJI=1 \
@@ -873,7 +872,7 @@ fetch_source_tarball() {
 
 # Copy the dotfiles for the selected profile and OS from the source tree into a
 # staging directory laid out the way apply_dotfiles expects. Files and
-# directories absent from the source are skipped, as before.
+# directories absent from the source are skipped.
 # Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/linux)
 stage_dotfiles() {
     local profile="$1"
@@ -1161,7 +1160,7 @@ apply_dotfiles() {
         stale="$addon"
     fi
 
-    # Older versions sourced ~/.bash_environment from ~/.bashrc; the new one does not.
+    # ~/.bashrc does not source ~/.bash_environment; tell users who have one.
     if [[ "$shell_type" == "bash" && -e "$HOME/.bash_environment" ]]; then
         # shellcheck disable=SC2088  # display text, not a path to expand.
         log "Note: ~/.bash_environment is no longer sourced by ~/.bashrc; its settings now live in ~/.bashrc.developer (developer profile). The old file was left in place."
@@ -1185,7 +1184,7 @@ apply_dotfiles() {
 # the identity in a separate, never-shipped file means re-applying the profile
 # can never overwrite it, and no placeholder substitution is needed.
 
-# Placeholder strings that older ProfilePilot versions shipped in ~/.gitconfig.
+# Placeholder strings that a ~/.gitconfig from an earlier ProfilePilot may hold.
 is_identity_placeholder() {
     case "$1" in
         "{FULL NAME}"|"{GITHUB EMAIL}"|"{GITHUB USERNAME}") return 0 ;;
@@ -1295,9 +1294,9 @@ personalize_gitconfig() {
 
 # Resolve how to handle installed packages not listed in the Brewfile into the
 # global CLEANUP_MODE (remove|skip). Mirrors the dotfiles conflict handling:
-# honors $CLEANUP (remove|skip|prompt), keeps the older $SKIP_CLEANUP=1 working
-# as an alias for skip, prompts on a TTY, and defaults to skip when no TTY is
-# available so a user's own packages are never uninstalled unattended.
+# honors $CLEANUP (remove|skip|prompt), treats $SKIP_CLEANUP=1 as skip, prompts
+# on a TTY, and defaults to skip when no TTY is available so a user's own
+# packages are never uninstalled unattended.
 #
 # The prompt is intentionally global (Remove all / Keep all) rather than
 # per-package: deciding which packages are safe to remove requires Homebrew's
@@ -1348,10 +1347,9 @@ determine_cleanup_mode() {
 # Print an end-of-run summary reflecting what each step actually did, and return
 # a non-zero status if anything genuinely failed. Only unresolved package
 # failures count as a failure: the package step deliberately continues past them
-# rather than aborting, so without this the run would otherwise end on an
-# unconditional "success" message. Kept dotfiles and an un-personalized gitconfig
-# are legitimate user/environment states, so they are reported but do not fail
-# the run. Returns 0 on success, 1 if packages are incomplete.
+# rather than aborting. Kept dotfiles and an un-personalized gitconfig are
+# legitimate user/environment states, so they are reported but do not fail the
+# run. Returns 0 on success, 1 if packages are incomplete.
 print_summary() {
     local rc=0
     log "----- Summary -----"
