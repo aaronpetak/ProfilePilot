@@ -334,13 +334,23 @@ check "migration does not overwrite an existing .gitconfig.local value" \
 
 # Include order: a per-directory includeIf identity must override the
 # ~/.gitconfig.local identity (the include sits at the top of .gitconfig).
-check "includeIf identity overrides .gitconfig.local" \
-    "$(identity_env 'mkdir -p "$HOME/projects/github/repo"
-        git init -q "$HOME/projects/github/repo"
-        git config --file "$HOME/.gitconfig.local" user.name Local
-        printf "[user]\n    name = PerDir\n" > "$HOME/projects/github/.gitconfig"
-        cd "$HOME/projects/github/repo" && git config user.name')" \
-    "PerDir"
+# $1 is the directory under ~/projects that holds the per-directory config.
+includeif_name() {
+    identity_env "mkdir -p \"\$HOME/projects/$1/repo\"
+        git init -q \"\$HOME/projects/$1/repo\"
+        git config --file \"\$HOME/.gitconfig.local\" user.name Local
+        printf '[user]\n    name = PerDir\n' > \"\$HOME/projects/$1/.gitconfig\"
+        cd \"\$HOME/projects/$1/repo\" && git config user.name"
+}
+check "includeIf identity for ~/projects/gh overrides .gitconfig.local" \
+    "$(includeif_name gh)" "PerDir"
+check "includeIf identity for ~/projects/ghe overrides .gitconfig.local" \
+    "$(includeif_name ghe)" "PerDir"
+check "the old ~/projects/github directory no longer selects an identity" \
+    "$(includeif_name github)" "Local"
+check ".gitconfig includes .gitconfig.local before any includeIf" \
+    "$(grep -n 'gitconfig.local\|includeIf' "$GITCONFIG_SRC" | grep -v '^[0-9]*:#' | head -n1 | cut -d: -f2- | tr -d ' ')" \
+    "path=~/.gitconfig.local"
 
 # ---------------------------------------------------------------------------
 # Homebrew prefix detection (find_brew_prefix)
