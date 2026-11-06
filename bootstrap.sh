@@ -22,8 +22,10 @@ DOTFILES_REF="${DOTFILES_REF:-main}"
 DOTFILES_TARBALL_URL="https://codeload.github.com/$DOTFILES_REPO_SLUG/tar.gz/$DOTFILES_REF"
 HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
-# Shell-specific dotfiles to download and apply. Aliases live in the universal
-# .shell_aliases file (sourced by both shells), so they are NOT listed here.
+# Shell-specific base dotfiles, shared by every profile (they live directly under
+# <os>/). Aliases live in the universal .shell_aliases file (sourced by both
+# shells), so they are NOT listed here. The developer profile adds one extra
+# file, see shell_addon_name_for.
 #
 # NOTE: These lookups are implemented as functions (not associative arrays,
 # i.e. `declare -A`) because this script must run on macOS's stock /bin/bash
@@ -31,14 +33,33 @@ HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/in
 # Associative arrays and `[[ -v arr[key] ]]` both require bash 4+.
 shell_files_for() {
     case "$1" in
-        bash) echo ".bashrc .bash_environment" ;;
+        bash) echo ".bashrc" ;;
         zsh)  echo ".zshrc .zprofile" ;;
         *)    ;;  # unknown shell: no shell-specific files (defensive; see shell_for_os)
     esac
 }
 
+# Name of the developer add-on file for a shell. The base rc sources it last if
+# it exists. Printed regardless of profile, so a minimal run can recognise a
+# stale add-on left by an earlier developer run.
+shell_addon_name_for() {
+    case "$1" in
+        bash) echo ".bashrc.developer" ;;
+        zsh)  echo ".zshrc.developer" ;;
+        *)    ;;
+    esac
+}
+
+# The add-on file the given profile installs for a shell (nothing for minimal).
+# It lives in <os>/<profile>/. Args: $1 profile, $2 shell.
+shell_addon_for() {
+    case "$1" in
+        profile-developer) shell_addon_name_for "$2" ;;
+    esac
+}
+
 # The shell whose dotfiles a given OS ships. The repo is organized one shell per
-# OS (macos/ has only .zshrc/.zprofile, linux/ has only .bashrc/.bash_environment),
+# OS (macos/ has only .zshrc/.zprofile, linux/ has only .bashrc),
 # so the dotfiles to install are determined by the OS, NOT by the user's login
 # shell ($SHELL). Deriving from $SHELL breaks whenever the login shell doesn't
 # match the OS's shipped set (e.g. bash login shell on macOS -> looks for a
@@ -810,6 +831,14 @@ stage_dotfiles() {
     local shell_type
     shell_type="$(shell_for_os "$OS_TYPE")"
     for file in $(shell_files_for "$shell_type"); do
+        if [[ -f "$SOURCE_DIR/$os_dir/$file" ]]; then
+            cp "$SOURCE_DIR/$os_dir/$file" "$dotfiles_dir/$file"
+        else
+            log "Note: $file not present in $os_dir (optional)"
+        fi
+    done
+
+    for file in $(shell_addon_for "$profile" "$shell_type"); do
         if [[ -f "$SOURCE_DIR/$os_dir/$profile/$file" ]]; then
             cp "$SOURCE_DIR/$os_dir/$profile/$file" "$dotfiles_dir/$file"
         else
@@ -955,16 +984,45 @@ resolve_one() {
     done
 }
 
-# Given the list of conflicting item names (existing files that differ from the
-# profile), report them, decide a mode, and act. Args: $1 - profile dir,
-# $2 - space-separated item names.
-resolve_conflicts() {
-    local profile_dir="$1" conflicts="$2" item
+# Retire a stale developer add-on by moving it aside to <name>.bak.<RUN_TS>.
+# Args: $1 - add-on file name (relative to $HOME).
+retire_stale_addon() {
+    local name="$1" backup="$HOME/$1.bak.$RUN_TS"
+    log "Retiring stale developer add-on $name (moved to $name.bak.$RUN_TS)."
+    mv "$HOME/$name" "$backup"
+}
 
-    log "These existing files differ from the ProfilePilot profile:"
-    for item in $conflicts; do
-        log "  $item"
+# Ask whether to keep or retire a stale add-on. Assumes a readable /dev/tty
+# (only called in perfile mode). Args: $1 - add-on file name.
+resolve_stale_addon() {
+    local name="$1" ans
+    while true; do
+        read -rp "$name is left over from the developer profile: [k]eep / [r]etire? " ans < /dev/tty
+        case "$(printf '%s' "${ans:-}" | tr 'A-Z' 'a-z')" in
+            r) retire_stale_addon "$name"; return ;;
+            k) log "Keeping $name; developer settings remain active."; STATUS_DOTFILES="kept"; return ;;
+            *) echo "Please answer k or r." > /dev/tty ;;
+        esac
     done
+}
+
+# Given the list of conflicting item names (existing files that differ from the
+# profile) and any stale add-on to retire, report them, decide a mode, and act.
+# Args: $1 - profile dir, $2 - space-separated conflicting item names,
+# $3 - stale add-on name (optional).
+resolve_conflicts() {
+    local profile_dir="$1" conflicts="$2" stale="${3:-}" item
+
+    if [[ -n "$conflicts" ]]; then
+        log "These existing files differ from the ProfilePilot profile:"
+        for item in $conflicts; do
+            log "  $item"
+        done
+    fi
+    if [[ -n "$stale" ]]; then
+        log "This profile has no developer add-on, but one exists from an earlier run:"
+        log "  $stale"
+    fi
 
     determine_conflict_mode
     case "$CONFLICT_MODE" in
@@ -973,14 +1031,23 @@ resolve_conflicts() {
             for item in $conflicts; do
                 backup_and_install "$profile_dir/$item" "$HOME/$item"
             done
+            for item in $stale; do
+                retire_stale_addon "$item"
+            done
             ;;
         skip)
             log "Keeping your existing files; not installing the differing profile files above."
+            for item in $stale; do
+                log "Keeping $item; developer settings remain active."
+            done
             STATUS_DOTFILES="kept"
             ;;
         perfile)
             for item in $conflicts; do
                 resolve_one "$profile_dir/$item" "$HOME/$item"
+            done
+            for item in $stale; do
+                resolve_stale_addon "$item"
             done
             ;;
     esac
@@ -1004,6 +1071,7 @@ apply_dotfiles() {
     # spaces, so a space-separated string is a safe bash 3.2-compatible list).
     local items="" item
     for item in $(shell_files_for "$shell_type"); do items="$items $item"; done
+    for item in $(shell_addon_for "$profile" "$shell_type"); do items="$items $item"; done
     for item in $UNIVERSAL_FILES; do items="$items $item"; done
     local profile_dirs
     profile_dirs="$(profile_specific_dirs_for "$profile")"
@@ -1027,12 +1095,27 @@ apply_dotfiles() {
         fi
     done
 
+    # A profile without an add-on (minimal) must not leave an earlier run's
+    # add-on active: the base rc would still source it. Retiring it is resolved
+    # together with the other conflicts, under the same mode.
+    local stale="" addon
+    addon="$(shell_addon_name_for "$shell_type")"
+    if [[ -n "$addon" && -z "$(shell_addon_for "$profile" "$shell_type")" && -e "$HOME/$addon" ]]; then
+        stale="$addon"
+    fi
+
+    # Older versions sourced ~/.bash_environment from ~/.bashrc; the new one does not.
+    if [[ "$shell_type" == "bash" && -e "$HOME/.bash_environment" ]]; then
+        # shellcheck disable=SC2088  # display text, not a path to expand.
+        log "Note: ~/.bash_environment is no longer sourced by ~/.bashrc; its settings now live in ~/.bashrc.developer (developer profile). The old file was left in place."
+    fi
+
     # Pass 2: resolve conflicts, if any. resolve_conflicts sets STATUS_DOTFILES
     # to "kept" when the user chose to keep differing files; otherwise this run
     # applied the profile.
     STATUS_DOTFILES="applied"
-    if [[ -n "$conflicts" ]]; then
-        resolve_conflicts "$profile_dir" "$conflicts"
+    if [[ -n "$conflicts" || -n "$stale" ]]; then
+        resolve_conflicts "$profile_dir" "$conflicts" "$stale"
     fi
 
     log "Profile files applied successfully"
