@@ -411,6 +411,14 @@ check "unpack_source_tarball is fatal on a corrupt archive" \
     "$(tarball_probe 'echo not-a-tarball > "$tmp/t.tar.gz"' | tr '\n' ' ')" "FATAL "
 
 # ---------------------------------------------------------------------------
+# Private workspace: bootstrap must use mktemp and never assign TMPDIR
+# ---------------------------------------------------------------------------
+check "bootstrap never assigns TMPDIR" \
+    "$(grep -cE '^[[:space:]]*(export[[:space:]]+)?TMPDIR=' "$BOOTSTRAP")" "0"
+check "bootstrap creates its workspace with mktemp -d" \
+    "$(grep -c '^WORKDIR="\$(mktemp -d)"$' "$BOOTSTRAP")" "1"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
