@@ -5,12 +5,15 @@ set -euo pipefail
 # ENVIRONMENT VARIABLES - USER CUSTOMIZABLE
 ###############################################################################
 
-# Repository and download sources. Set DOTFILES_REPO_SLUG to pull dotfiles and
-# Brewfiles from a different fork without editing this script.
+# Repository source. When this script is run from a ProfilePilot checkout it
+# installs from that checkout. Otherwise (e.g. piped from curl) it downloads ONE
+# tarball of $DOTFILES_REF from $DOTFILES_REPO_SLUG, so every file comes from the
+# same snapshot. Set DOTFILES_REPO_SLUG to use a fork, DOTFILES_REF (branch, tag
+# or commit) to pin a version.
 DOTFILES_REPO_SLUG="${DOTFILES_REPO_SLUG:-aaronpetak/ProfilePilot}"
-DOTFILES_REPO="https://raw.githubusercontent.com/$DOTFILES_REPO_SLUG/main"
+DOTFILES_REF="${DOTFILES_REF:-main}"
+DOTFILES_TARBALL_URL="https://codeload.github.com/$DOTFILES_REPO_SLUG/tar.gz/$DOTFILES_REF"
 HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
-DOTFILES_ARCHIVE_URL="https://github.com/$DOTFILES_REPO_SLUG/archive/refs/heads/main.zip"
 
 # Shell-specific dotfiles to download and apply. Aliases live in the universal
 # .shell_aliases file (sourced by both shells), so they are NOT listed here.
@@ -74,9 +77,6 @@ mkdir -p "$TMPDIR"
 # trap fires, not when it is defined (SC2064); TMPDIR is constant here either
 # way, but this is the correct form.
 trap 'rm -rf "$TMPDIR"' EXIT
-
-# Derived variables
-BREWFILES_URL="$DOTFILES_REPO/universal/brewfiles"
 
 # Single timestamp for this run, reused for every dotfile backup so that all
 # of a run's backups share one suffix (e.g. .zshrc.bak.20260728-145900) and a
@@ -205,16 +205,6 @@ run_as_root() {
         SUDO_RESOLVED="yes"
     fi
     sudo "$@"
-}
-
-# Download a Brewfile from the configured repository
-# Args: $1 - filename (e.g., Brewfile-developer)
-download_brewfile() {
-    local file="$1"
-    local url="$BREWFILES_URL/$file"
-    local dest="$TMPDIR/$file"
-    log "Downloading $file from ProfilePilot repo"
-    curl -fsSL "$url" -o "$dest" || fatal "Failed to download $file from $url"
 }
 
 # Append a line to a shell startup file unless it is already there. Guarding on
@@ -687,102 +677,86 @@ install_brewfile_packages() {
     return 0
 }
 
-# Download an optional dotfile, distinguishing a genuine "not present in the
-# repo" from a real transport failure. curl -f returns exit 22 for an HTTP 4xx
-# (a 404 means the file legitimately isn't in this profile -- expected and
-# optional). Any other non-zero exit is a transport problem (TLS/DNS/connection)
-# and must be surfaced loudly: previously all failures were funneled into an
-# "(optional) not found" note, which hid real errors such as a broken CA bundle
-# behind a benign-looking message.
-# Args: $1 - source URL, $2 - destination path, $3 - human label for messages
-# Returns: 0 on success, 1 on any failure (already logged).
-download_optional_file() {
-    local url="$1" dest="$2" label="$3"
-    local err rc=0
-    # `|| rc=$?` keeps curl out of the final position of the list so `set -e`
-    # does not abort on a non-zero exit, and reliably captures its status.
-    err=$(curl -fsSL "$url" -o "$dest" 2>&1) || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        return 0
-    fi
-    if [[ $rc -eq 22 ]]; then
-        log "Note: $label not found in repo (optional)"
-    else
-        log "Warning: failed to download $label from $url (curl exit $rc): ${err:-no error output}"
-    fi
-    return 1
+# Print the checkout directory when this script sits inside a ProfilePilot
+# clone (its directory contains universal/brewfiles); return 1 otherwise.
+# Args: $1 - the script path, i.e. ${BASH_SOURCE[0]:-}. It is empty when the
+# script is piped (curl | bash, bash < file) and a /dev/fd path for bash <(...);
+# neither is a checkout, so both fall through to the tarball.
+local_checkout_dir() {
+    local src="${1:-}" dir
+    [[ -n "$src" ]] || return 1
+    dir="$(cd "$(dirname "$src")" 2>/dev/null && pwd)" || return 1
+    [[ -d "$dir/universal/brewfiles" ]] || return 1
+    echo "$dir"
 }
 
-# Download all dotfiles for the selected profile and OS
+# Unpack a ProfilePilot tarball into a directory and check it looks right. The
+# top-level directory name inside the archive is deliberately never computed:
+# --strip-components=1 drops it, then a sentinel file proves the layout.
+# Args: $1 - tarball path, $2 - destination directory
+unpack_source_tarball() {
+    local tarball="$1" dest="$2"
+    mkdir -p "$dest"
+    tar -xzf "$tarball" -C "$dest" --strip-components=1 ||
+        fatal "Failed to extract the ProfilePilot tarball."
+    [[ -f "$dest/universal/brewfiles/Brewfile-minimal" ]] ||
+        fatal "The downloaded archive does not look like ProfilePilot (universal/brewfiles/Brewfile-minimal is missing). Check DOTFILES_REPO_SLUG and DOTFILES_REF."
+}
+
+# Download the single pinned tarball and unpack it.
+# Args: $1 - destination directory
+fetch_source_tarball() {
+    local dest="$1" tarball="$TMPDIR/source.tar.gz"
+    log "Downloading ProfilePilot ($DOTFILES_REPO_SLUG @ $DOTFILES_REF)..."
+    curl -fsSL "$DOTFILES_TARBALL_URL" -o "$tarball" ||
+        fatal "Failed to download $DOTFILES_TARBALL_URL"
+    unpack_source_tarball "$tarball" "$dest"
+}
+
+# Copy the dotfiles for the selected profile and OS from the source tree into a
+# staging directory laid out the way apply_dotfiles expects. Files and
+# directories absent from the source are skipped, as before.
 # Args: $1 - profile name (e.g., profile-developer), $2 - OS directory name (macos/linux)
-download_dotfiles() {
+stage_dotfiles() {
     local profile="$1"
     local os_dir="$2"
     local dotfiles_dir="$TMPDIR/dotfiles-$os_dir-$profile"
+    local file dir
 
-    log "Downloading dotfiles for $os_dir/$profile"
+    log "Staging dotfiles for $os_dir/$profile"
     mkdir -p "$dotfiles_dir"
 
     local shell_type
     shell_type="$(shell_for_os "$OS_TYPE")"
     for file in $(shell_files_for "$shell_type"); do
-        local file_url="$DOTFILES_REPO/$os_dir/$profile/$file"
-        local dest="$dotfiles_dir/$file"
-        log "Downloading $file from $os_dir/$profile"
-        download_optional_file "$file_url" "$dest" "$file ($os_dir/$profile)" || true
+        if [[ -f "$SOURCE_DIR/$os_dir/$profile/$file" ]]; then
+            cp "$SOURCE_DIR/$os_dir/$profile/$file" "$dotfiles_dir/$file"
+        else
+            log "Note: $file not present in $os_dir/$profile (optional)"
+        fi
     done
 
     for file in $UNIVERSAL_FILES; do
-        local file_url="$DOTFILES_REPO/universal/$file"
-        local dest="$dotfiles_dir/$file"
-        log "Downloading $file"
-        download_optional_file "$file_url" "$dest" "$file (universal)" || true
+        if [[ -f "$SOURCE_DIR/universal/$file" ]]; then
+            cp "$SOURCE_DIR/universal/$file" "$dotfiles_dir/$file"
+        else
+            log "Note: $file not present in universal (optional)"
+        fi
     done
 
     local profile_dirs
     profile_dirs="$(profile_specific_dirs_for "$profile")"
     if [[ -n "$profile_dirs" ]]; then
         for dir in $profile_dirs; do
-            log "Downloading $dir"
-            download_universal_directory "$dir" "$dotfiles_dir"
+            if [[ -d "$SOURCE_DIR/universal/$dir" ]]; then
+                cp -R "$SOURCE_DIR/universal/$dir" "$dotfiles_dir/$dir"
+            else
+                log "Note: $dir not present in universal (optional)"
+            fi
         done
     fi
 
-    log "ProfilePilot profile downloaded successfully"
-}
-
-# Download and extract a directory from the ProfilePilot repository archive
-# Args: $1 - directory name, $2 - parent directory to extract into
-download_universal_directory() {
-    local dir_name="$1"
-    local dest_parent="$2"
-    local dest_dir="$dest_parent/$dir_name"
-    local temp_extract="$TMPDIR/dotfiles-extract-$$"
-
-    mkdir -p "$temp_extract"
-
-    local zip_file="$temp_extract/dotfiles.zip"
-    download_optional_file "$DOTFILES_ARCHIVE_URL" "$zip_file" "ProfilePilot archive for $dir_name" || return
-
-    (
-        cd "$temp_extract"
-        unzip -q "$zip_file" 2>/dev/null || {
-            log "Note: Could not extract $dir_name from ProfilePilot archive (optional)"
-            return 1
-        }
-
-        local root_dir
-        root_dir=$(find . -maxdepth 1 -type d ! -name "." | head -1 | sed 's|^\./||')
-
-        if [[ -d "$root_dir/universal/$dir_name" ]]; then
-            cp -r "$root_dir/universal/$dir_name" "$dest_dir"
-            log "Downloaded $dir_name successfully"
-        else
-            log "Note: $dir_name not found in ProfilePilot archive (optional)"
-        fi
-    )
-
-    rm -rf "$temp_extract"
+    log "ProfilePilot profile staged successfully"
 }
 
 # Return 0 if a source file/dir is byte-for-byte identical to an existing
@@ -1209,10 +1183,22 @@ fi
 log "Selected Brewfile: $BREWFILE"
 
 ###############################################################################
-# DOWNLOAD BREWFILE - Fetch the package manifest for chosen environment
+# SOURCE - the local checkout, or one pinned tarball
 ###############################################################################
 
-download_brewfile "$BREWFILE"
+if SOURCE_DIR="$(local_checkout_dir "${BASH_SOURCE[0]:-}")"; then
+    log "Installing from local checkout: $SOURCE_DIR"
+else
+    # curl, tar and gzip are needed to fetch and unpack the tarball.
+    if [[ "$OS_TYPE" == "linux" ]]; then
+        ensure_linux_packages curl tar gzip
+    fi
+    SOURCE_DIR="$TMPDIR/source"
+    fetch_source_tarball "$SOURCE_DIR"
+fi
+
+BREWFILE_PATH="$SOURCE_DIR/universal/brewfiles/$BREWFILE"
+[[ -f "$BREWFILE_PATH" ]] || fatal "Brewfile not found: $BREWFILE_PATH"
 
 ###############################################################################
 # INSTALL PACKAGE MANAGER & BUILD TOOLS
@@ -1237,7 +1223,7 @@ brew update
 # Install packages, retrying transient failures and continuing past any that
 # persist (see install_brewfile_packages). This intentionally never aborts the
 # run, so dotfiles, tflint, and cleanup still happen even if a package fails.
-install_brewfile_packages "$TMPDIR/$BREWFILE"
+install_brewfile_packages "$BREWFILE_PATH"
 
 # tflint is a macOS-only cask in Homebrew; install it separately on Linux for
 # the developer profile.
@@ -1251,7 +1237,7 @@ fi
 
 DOTFILES_PROFILE="profile-${BREWFILE#Brewfile-}"
 SHELL_TYPE="$(shell_for_os "$OS_TYPE")"
-download_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
+stage_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
 # Preserve an identity from a pre-existing ~/.gitconfig before it can be replaced.
 migrate_gitconfig_identity
 apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
@@ -1334,7 +1320,7 @@ else
     # and touches nothing. Use it to preview the candidates so the user (or the
     # log, in non-interactive runs) can see exactly what is at stake before any
     # destructive pass.
-    CLEANUP_PREVIEW=$(brew bundle cleanup --file="$TMPDIR/$BREWFILE" 2>&1) || true
+    CLEANUP_PREVIEW=$(brew bundle cleanup --file="$BREWFILE_PATH" 2>&1) || true
 
     if [[ -z "$CLEANUP_PREVIEW" ]]; then
         log "Nothing to clean up; every installed package is part of $BREWFILE."
@@ -1347,7 +1333,7 @@ else
         determine_cleanup_mode
         if [[ "$CLEANUP_MODE" == "remove" ]]; then
             log "Removing packages not listed in $BREWFILE..."
-            brew bundle cleanup --file="$TMPDIR/$BREWFILE" --force
+            brew bundle cleanup --file="$BREWFILE_PATH" --force
             log "Cleanup complete."
         else
             log "Keeping all installed packages; nothing was removed. (Set CLEANUP=remove to uninstall packages not in the profile.)"
