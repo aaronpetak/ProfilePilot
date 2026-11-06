@@ -69,14 +69,13 @@ brewfile_for_profile() {
 # CONFIGURATION
 ###############################################################################
 
-TMPDIR="/tmp/brew-bootstrap"
-rm -rf "$TMPDIR"
-mkdir -p "$TMPDIR"
+# Private scratch directory: mktemp -d makes it unique per run and mode 0700, so
+# concurrent runs and other local users cannot interfere. TMPDIR itself is never
+# assigned, since that would redirect every child process's temp files.
+WORKDIR="$(mktemp -d)"
 
-# Cleanup temp directory on exit. Single-quoted so $TMPDIR is expanded when the
-# trap fires, not when it is defined (SC2064); TMPDIR is constant here either
-# way, but this is the correct form.
-trap 'rm -rf "$TMPDIR"' EXIT
+# Remove it on exit. Single-quoted so $WORKDIR is expanded when the trap fires.
+trap 'rm -rf "$WORKDIR"' EXIT
 
 # Single timestamp for this run, reused for every dotfile backup so that all
 # of a run's backups share one suffix (e.g. .zshrc.bak.20260728-145900) and a
@@ -328,7 +327,7 @@ install_homebrew() {
     # 0 when curl fails (the substitution is empty), so a failed download would
     # look like a successful install.
     log "Installing Homebrew..."
-    local installer="$TMPDIR/homebrew-install.sh"
+    local installer="$WORKDIR/homebrew-install.sh"
     curl -fsSL "$HOMEBREW_INSTALL_URL" -o "$installer" ||
         fatal "Failed to download the Homebrew installer from $HOMEBREW_INSTALL_URL"
     /bin/bash "$installer" ||
@@ -481,7 +480,7 @@ install_tflint_linux() {
     local url="https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_${arch}.zip"
     local dest_dir
     dest_dir="$(brew --prefix 2>/dev/null)/bin" || { log "Note: could not determine the Homebrew prefix; skipping tflint."; return; }
-    local tmp_zip="$TMPDIR/tflint.zip"
+    local tmp_zip="$WORKDIR/tflint.zip"
 
     log "Installing tflint (linux_${arch}) from GitHub releases..."
     if ! curl -fsSL -o "$tmp_zip" "$url"; then
@@ -489,8 +488,8 @@ install_tflint_linux() {
         return
     fi
 
-    unzip -o -q "$tmp_zip" -d "$TMPDIR/tflint" || { log "Note: failed to unzip tflint; skipping."; return; }
-    install -m 0755 "$TMPDIR/tflint/tflint" "$dest_dir/tflint" || { log "Note: failed to install tflint binary; skipping."; return; }
+    unzip -o -q "$tmp_zip" -d "$WORKDIR/tflint" || { log "Note: failed to unzip tflint; skipping."; return; }
+    install -m 0755 "$WORKDIR/tflint/tflint" "$dest_dir/tflint" || { log "Note: failed to install tflint binary; skipping."; return; }
     log "tflint installed to $dest_dir/tflint"
 }
 
@@ -706,7 +705,7 @@ unpack_source_tarball() {
 # Download the single pinned tarball and unpack it.
 # Args: $1 - destination directory
 fetch_source_tarball() {
-    local dest="$1" tarball="$TMPDIR/source.tar.gz"
+    local dest="$1" tarball="$WORKDIR/source.tar.gz"
     log "Downloading ProfilePilot ($DOTFILES_REPO_SLUG @ $DOTFILES_REF)..."
     curl -fsSL "$DOTFILES_TARBALL_URL" -o "$tarball" ||
         fatal "Failed to download $DOTFILES_TARBALL_URL"
@@ -720,7 +719,7 @@ fetch_source_tarball() {
 stage_dotfiles() {
     local profile="$1"
     local os_dir="$2"
-    local dotfiles_dir="$TMPDIR/dotfiles-$os_dir-$profile"
+    local dotfiles_dir="$WORKDIR/dotfiles-$os_dir-$profile"
     local file dir
 
     log "Staging dotfiles for $os_dir/$profile"
@@ -913,7 +912,7 @@ apply_dotfiles() {
     local profile="$1"
     local shell_type="$2"
     local os_dir="$3"
-    local profile_dir="$TMPDIR/dotfiles-$os_dir-$profile"
+    local profile_dir="$WORKDIR/dotfiles-$os_dir-$profile"
 
     [[ ! -d "$profile_dir" ]] && { log "Warning: ProfilePilot profile directory not found: $profile_dir"; STATUS_DOTFILES="not-found"; return; }
 
@@ -1193,7 +1192,7 @@ else
     if [[ "$OS_TYPE" == "linux" ]]; then
         ensure_linux_packages curl tar gzip
     fi
-    SOURCE_DIR="$TMPDIR/source"
+    SOURCE_DIR="$WORKDIR/source"
     fetch_source_tarball "$SOURCE_DIR"
 fi
 

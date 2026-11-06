@@ -9,7 +9,7 @@ The bootstrap script lives in this repository as [`bootstrap.sh`](bootstrap.sh) 
 To bootstrap a fresh machine, run the one-liner:
 
 ```bash
-curl -fsSL -o /tmp/profile-pilot.sh https://raw.githubusercontent.com/aaronpetak/ProfilePilot/main/bootstrap.sh && bash /tmp/profile-pilot.sh
+f="$(mktemp)" && curl -fsSL https://raw.githubusercontent.com/aaronpetak/ProfilePilot/main/bootstrap.sh -o "$f" && bash "$f"
 ```
 
 The script will detect your OS (macOS or Linux), prompt you to select a profile, and configure your system using files from this repository.
