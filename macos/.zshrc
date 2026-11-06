@@ -61,8 +61,8 @@ export VISUAL="${VISUAL:-$EDITOR}"
 ###############################################################################
 # Developer Add-on
 ###############################################################################
-# Oh My Posh, virtualenvwrapper, fzf and the editor are configured in
-# ~/.zshrc.developer, present only for the developer profile. Sourced last.
+# Oh My Posh, virtualenvwrapper and fzf are configured in ~/.zshrc.developer,
+# present only for the developer profile. Sourced last.
 if [[ -f "$HOME/.zshrc.developer" ]]; then
     source "$HOME/.zshrc.developer"
 fi
