@@ -934,82 +934,119 @@ apply_dotfiles() {
     log "Profile files applied successfully"
 }
 
-# Fill in the personal fields of the freshly-installed ~/.gitconfig.
+# Git identity lives in ~/.gitconfig.local, not in ~/.gitconfig.
 #
-# The shipped .gitconfig carries placeholders ({FULL NAME}, {GITHUB EMAIL},
-# {GITHUB USERNAME}) that used to require a manual edit after the run — easy to
-# forget, leaving git commits attributed to "{FULL NAME}". Instead we prompt for
-# the values here and substitute them in place.
+# The shipped .gitconfig has no [user] section; it includes ~/.gitconfig.local
+# at the top, so per-directory includeIf identities still override it. Keeping
+# the identity in a separate, never-shipped file means re-applying the profile
+# can never overwrite it, and no placeholder substitution is needed.
+
+# Placeholder strings that older ProfilePilot versions shipped in ~/.gitconfig.
+is_identity_placeholder() {
+    case "$1" in
+        "{FULL NAME}"|"{GITHUB EMAIL}"|"{GITHUB USERNAME}") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Before the profile is applied (and may replace ~/.gitconfig), carry a real
+# identity from the live ~/.gitconfig into ~/.gitconfig.local when the latter
+# does not already have one. Placeholder values are never copied.
+migrate_gitconfig_identity() {
+    local gitconfig="$HOME/.gitconfig" local_cfg="$HOME/.gitconfig.local"
+    local key value
+    [[ -f "$gitconfig" ]] || return 0
+    for key in user.name user.email; do
+        value=$(git config --file "$gitconfig" "$key" 2>/dev/null) || value=""
+        [[ -n "$value" ]] || continue
+        is_identity_placeholder "$value" && continue
+        if [[ -z "$(git config --file "$local_cfg" "$key" 2>/dev/null)" ]]; then
+            if git config --file "$local_cfg" "$key" "$value"; then
+                log "Migrated $key from ~/.gitconfig to ~/.gitconfig.local."
+            fi
+        fi
+    done
+    return 0
+}
+
+# Confirm git resolves the identity via the global config (which must include
+# ~/.gitconfig.local). Sets STATUS_GITCONFIG to $3 on success, else incomplete.
+# Args: $1 - expected user.name, $2 - expected user.email, $3 - success status
+verify_git_identity() {
+    local got_name got_email
+    got_name=$(git config --global --includes user.name 2>/dev/null) || got_name=""
+    got_email=$(git config --global --includes user.email 2>/dev/null) || got_email=""
+    if [[ "$got_name" == "$1" && "$got_email" == "$2" ]]; then
+        STATUS_GITCONFIG="$3"
+    else
+        log "Note: git does not read ~/.gitconfig.local from your ~/.gitconfig (it likely predates the include)."
+        log "Add this to the top of ~/.gitconfig: [include] path = ~/.gitconfig.local"
+        STATUS_GITCONFIG="incomplete"
+    fi
+}
+
+# Write the git identity into ~/.gitconfig.local.
 #
-# Values may be supplied via env (GIT_NAME, GIT_EMAIL, GIT_USERNAME) to run
-# unattended; any not supplied are prompted for on a TTY. With no TTY and no env
-# values we leave the placeholders intact and print how to fix them, rather than
-# baking blanks into the config.
+# Values may be supplied via env (GIT_NAME, GIT_EMAIL) to run unattended; any
+# not supplied and not already present are prompted for on a TTY. With no TTY
+# and no values we write nothing and print how to fix it. Values containing a
+# newline are rejected. After writing, we verify that git actually resolves the
+# identity through ~/.gitconfig; if the user kept an older ~/.gitconfig without
+# the include, we say so instead of claiming success.
 personalize_gitconfig() {
-    local gitconfig="$HOME/.gitconfig"
+    local gitconfig="$HOME/.gitconfig" local_cfg="$HOME/.gitconfig.local"
 
     [[ -f "$gitconfig" ]] || { log "Note: ~/.gitconfig not present; skipping git personalization."; STATUS_GITCONFIG="absent"; return; }
 
-    # Nothing to do if the placeholders are already gone (e.g. a re-run where the
-    # user kept their existing, already-personalized .gitconfig).
-    if ! grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
-        # shellcheck disable=SC2088  # "~/.gitconfig" is display text in a log message, not a path to expand.
-        log "~/.gitconfig is already personalized; leaving it unchanged."
-        STATUS_GITCONFIG="already"
+    local name="${GIT_NAME:-}" email="${GIT_EMAIL:-}"
+    local have_name have_email
+    have_name=$(git config --file "$local_cfg" user.name 2>/dev/null) || have_name=""
+    have_email=$(git config --file "$local_cfg" user.email 2>/dev/null) || have_email=""
+
+    # An identity already in ~/.gitconfig.local is kept unless env overrides it.
+    if [[ -z "$name" && -z "$email" && -n "$have_name" && -n "$have_email" ]]; then
+        # shellcheck disable=SC2088  # display text, not a path to expand.
+        log "Git identity already set in ~/.gitconfig.local; leaving it unchanged."
+        verify_git_identity "$have_name" "$have_email" "already"
         return
     fi
 
-    local name="${GIT_NAME:-}" email="${GIT_EMAIL:-}" username="${GIT_USERNAME:-}"
-
-    # Prompt for anything not preset, but only if we can read a terminal.
+    # Prompt for whatever is still missing, but only if we can read a terminal.
     if tty_available; then
         {
             echo ""
-            echo "Personalize your git identity (written to ~/.gitconfig):"
+            echo "Personalize your git identity (written to ~/.gitconfig.local):"
         } > /dev/tty
-        [[ -z "$name" ]]     && read -rp "  Full name: " name < /dev/tty
-        [[ -z "$email" ]]    && read -rp "  GitHub email (e.g. you@example.com or the GitHub no-reply address): " email < /dev/tty
-        [[ -z "$username" ]] && read -rp "  GitHub username: " username < /dev/tty
+        if [[ -z "$name" && -z "$have_name" ]]; then read -rp "  Full name: " name < /dev/tty; fi
+        if [[ -z "$email" && -z "$have_email" ]]; then read -rp "  GitHub email (e.g. you@example.com or the GitHub no-reply address): " email < /dev/tty; fi
     fi
 
-    # If we still have no values (no TTY and no env), don't write blanks over the
-    # placeholders — leave them so the config is obviously still incomplete.
-    if [[ -z "$name" && -z "$email" && -z "$username" ]]; then
-        log "No git identity provided and no interactive terminal; leaving ~/.gitconfig placeholders in place."
-        log "Set them later with: git config --global user.name '...'; git config --global user.email '...'; git config --global user.username '...'"
+    local nl=$'\n'
+    if [[ "$name" == *"$nl"* || "$email" == *"$nl"* ]]; then
+        log "Note: git identity values must not contain newlines; not writing ~/.gitconfig.local."
         STATUS_GITCONFIG="incomplete"
         return
     fi
 
-    # Substitute each provided value in place. We escape the substitution's
-    # special characters (&, /, and \) so an address or name containing them
-    # can't corrupt the sed replacement. Any field left blank keeps its
-    # placeholder, which we report so it isn't silently forgotten.
-    local sed_escaped
-    sed_escape() { printf '%s' "$1" | sed -e 's/[&/\]/\\&/g'; }
-
     if [[ -n "$name" ]]; then
-        sed_escaped=$(sed_escape "$name")
-        sed -i.bak "s/{FULL NAME}/$sed_escaped/" "$gitconfig"
+        git config --file "$local_cfg" user.name "$name" || { log "Note: could not write user.name to ~/.gitconfig.local."; STATUS_GITCONFIG="incomplete"; return; }
     fi
     if [[ -n "$email" ]]; then
-        sed_escaped=$(sed_escape "$email")
-        sed -i.bak "s/{GITHUB EMAIL}/$sed_escaped/" "$gitconfig"
+        git config --file "$local_cfg" user.email "$email" || { log "Note: could not write user.email to ~/.gitconfig.local."; STATUS_GITCONFIG="incomplete"; return; }
     fi
-    if [[ -n "$username" ]]; then
-        sed_escaped=$(sed_escape "$username")
-        sed -i.bak "s/{GITHUB USERNAME}/$sed_escaped/" "$gitconfig"
-    fi
-    # sed -i on both GNU (Linux) and BSD (macOS) leaves a .bak file; remove it.
-    rm -f "$gitconfig.bak"
 
-    log "Personalized ~/.gitconfig."
-    if grep -q '{FULL NAME}\|{GITHUB EMAIL}\|{GITHUB USERNAME}' "$gitconfig"; then
-        log "Note: some git identity fields were left blank and still contain placeholders in ~/.gitconfig; edit them to finish."
+    have_name=$(git config --file "$local_cfg" user.name 2>/dev/null) || have_name=""
+    have_email=$(git config --file "$local_cfg" user.email 2>/dev/null) || have_email=""
+
+    if [[ -z "$have_name" || -z "$have_email" ]]; then
+        log "No complete git identity provided; ~/.gitconfig.local is missing user.name and/or user.email."
+        log "Set them later with: git config --file ~/.gitconfig.local user.name '...'; git config --file ~/.gitconfig.local user.email '...'"
         STATUS_GITCONFIG="incomplete"
-    else
-        STATUS_GITCONFIG="personalized"
+        return
     fi
+
+    log "Wrote git identity to ~/.gitconfig.local."
+    verify_git_identity "$have_name" "$have_email" "personalized"
 }
 
 # Print an end-of-run summary reflecting what each step actually did, and return
@@ -1037,9 +1074,9 @@ print_summary() {
     esac
 
     case "$STATUS_GITCONFIG" in
-        personalized) log "  Gitconfig: personalized." ;;
-        already)      log "  Gitconfig: already personalized; left unchanged." ;;
-        incomplete)   log "  Gitconfig: some identity fields still contain placeholders; edit ~/.gitconfig to finish." ;;
+        personalized) log "  Gitconfig: identity written to ~/.gitconfig.local." ;;
+        already)      log "  Gitconfig: identity already in ~/.gitconfig.local; left unchanged." ;;
+        incomplete)   log "  Gitconfig: git identity incomplete or not read by ~/.gitconfig; see the notes above (needs user.name/user.email in ~/.gitconfig.local and an include in ~/.gitconfig)." ;;
         absent)       log "  Gitconfig: ~/.gitconfig not present; skipped." ;;
         *)            log "  Gitconfig: not attempted." ;;
     esac
@@ -1165,10 +1202,12 @@ fi
 DOTFILES_PROFILE="profile-${BREWFILE#Brewfile-}"
 SHELL_TYPE="$(shell_for_os "$OS_TYPE")"
 download_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
+# Preserve an identity from a pre-existing ~/.gitconfig before it can be replaced.
+migrate_gitconfig_identity
 apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
 
-# Fill in name/email/username in the just-installed ~/.gitconfig interactively,
-# so it never gets left with the shipped placeholders.
+# Write the git identity to ~/.gitconfig.local (prompting if needed) and verify
+# git can read it through ~/.gitconfig.
 personalize_gitconfig
 
 ###############################################################################
