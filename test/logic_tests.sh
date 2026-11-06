@@ -152,6 +152,36 @@ check "developer add-on does not hardcode a Homebrew prefix" \
 check "bashrc no longer sources .bash_environment" \
     "$(grep -c '^[[:space:]]*\. ~/\.bash_environment' "$BASE_BASHRC")" "0"
 
+# Behavioral: source the base .bashrc in an interactive shell with every system
+# path redirected into a temp dir, so the result does not depend on this
+# machine's git installation. $1 is shell code run in the temp dir first
+# (e.g. to plant a fake git-prompt.sh); prints stderr noise, PS1, rendered PS1.
+git_prompt_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        mkdir -p "$tmp/home"
+        sed -e "s#/usr/#$tmp/usr/#g; s#/etc/#$tmp/etc/#g" "$BASE_BASHRC" > "$tmp/home/.bashrc"
+        eval "$1"
+        env -u HOMEBREW_PREFIX HOME="$tmp/home" bash --norc -i \
+            -c '. ~/.bashrc; printf "%s\n%s\n" "$PS1" "${PS1@P}"' 2>"$tmp/err" | sed "s#$tmp#TMP#g"
+        grep -v 'job control\|process group' "$tmp/err" | sed "s#$tmp#TMP#g"
+    )
+}
+check "fallback prompt without git-prompt: plain PS1, no __git_ps1, no errors" \
+    "$(git_prompt_probe ':' | head -n1)" '\u@\h:\w\$ '
+check "fallback prompt without git-prompt: nothing on stderr" \
+    "$(git_prompt_probe ':' | tail -n +3)" ""
+check "fallback prompt with git-prompt: __git_ps1 evaluated per prompt (single-quoted)" \
+    "$(git_prompt_probe 'mkdir -p "$tmp/usr/share/git-core/contrib/completion"
+        echo "__git_ps1() { printf \" (%s)\" main; }" > "$tmp/usr/share/git-core/contrib/completion/git-prompt.sh"' | head -n1)" \
+    '\u@\h:\w$(__git_ps1 " (%s)")\$ '
+check "fallback prompt with git-prompt: the helper's output appears in the rendered prompt" \
+    "$(git_prompt_probe 'mkdir -p "$tmp/usr/share/git-core/contrib/completion"
+        echo "__git_ps1() { printf \" (%s)\" main; }" > "$tmp/usr/share/git-core/contrib/completion/git-prompt.sh"' | sed -n 2p | sed 's/^[^ ]* //')" \
+    "(main)$ "
+check "add-on no longer references __git_ps1" "$(grep -c '__git_ps1' "$DEV_ADDON")" "0"
+
 # Behavioral: run the .bashrc detection loop with its candidates redirected to a
 # temp dir holding a fake brew, and confirm the first existing one is evaluated.
 brew_loop_result() {
