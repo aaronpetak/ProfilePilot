@@ -239,6 +239,80 @@ run_as_root() {
     sudo "$@"
 }
 
+# Lowercase the argument. The explicit [:upper:] / [:lower:] classes follow the
+# locale, unlike the A-Z / a-z ranges. Prints no trailing newline.
+# Args: $1 - text
+to_lower() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# Show a menu on the terminal and read one answer from it. Every interactive
+# prompt goes through here. Callers must have checked tty_available first.
+# Prints the answer lowercased (empty if the user just pressed enter).
+# Args: $1 - the read prompt, $2... - menu lines printed before the prompt
+ask_choice() {
+    local prompt="$1" line answer
+    shift
+    if [[ $# -gt 0 ]]; then
+        for line in "$@"; do
+            printf '%s\n' "$line"
+        done > /dev/tty
+    fi
+    read -rp "$prompt" answer < /dev/tty
+    to_lower "${answer:-}"
+}
+
+# The distro's package manager: dnf, apt-get, pacman or zypper, in that order.
+# Fatal when none is found. Cached in PKG_MANAGER; call it directly (not in a
+# command substitution) so the cache persists, and use $PKG_MANAGER afterwards.
+PKG_MANAGER=""
+detect_pkg_manager() {
+    if [[ -z "$PKG_MANAGER" ]]; then
+        local pm
+        for pm in dnf apt-get pacman zypper; do
+            if command -v "$pm" >/dev/null 2>&1; then
+                PKG_MANAGER="$pm"
+                break
+            fi
+        done
+        [[ -n "$PKG_MANAGER" ]] ||
+            fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)" >&2
+    fi
+    echo "$PKG_MANAGER"
+}
+
+# Install packages with the detected package manager. Returns the install's
+# status so callers decide what a failure means. apt-get update runs once per
+# run, before the first apt install.
+# Args: package names
+APT_UPDATED=""
+pkg_install() {
+    detect_pkg_manager >/dev/null
+    case "$PKG_MANAGER" in
+        dnf)
+            run_as_root dnf install -y "$@"
+            ;;
+        apt-get)
+            if [[ -z "$APT_UPDATED" ]]; then
+                run_as_root apt-get update || true
+                APT_UPDATED="yes"
+            fi
+            run_as_root apt-get install -y "$@"
+            ;;
+        pacman)
+            # -Syu refreshes the sync databases (empty on a fresh Arch/Manjaro
+            # system, where a bare -S fails "target not found") and upgrades in
+            # the same transaction, since Arch does not support partial
+            # upgrades. --needed skips packages already present.
+            run_as_root pacman -Syu --needed --noconfirm "$@"
+            ;;
+        zypper)
+            run_as_root zypper refresh || true
+            run_as_root zypper install -y "$@"
+            ;;
+    esac
+}
+
 # Append a line to a shell startup file unless it is already there. Guarding on
 # content (not on a marker) keeps repeated bootstrap runs from stacking
 # duplicate lines. Creates the file if absent.
@@ -401,28 +475,28 @@ install_build_tools() {
 
     log "Installing build tools for Linux..."
 
-    if command -v dnf >/dev/null 2>&1; then
-        # Fedora / RHEL / CentOS Stream
-        # Try group install first; fall back to explicit packages if the group name differs across versions
-        run_as_root dnf group install -y development-tools 2>/dev/null || \
-            run_as_root dnf install -y gcc gcc-c++ make || fatal "Failed to install build tools via dnf"
-    elif command -v apt-get >/dev/null 2>&1; then
-        # Debian / Ubuntu
-        run_as_root apt-get install -y build-essential || fatal "Failed to install build-essential"
-    elif command -v pacman >/dev/null 2>&1; then
-        # Arch / Manjaro. base-devel is a package group; --needed skips ones
-        # already present so a re-run is a no-op. -Syu refreshes the sync DBs
-        # (empty on a fresh install) and upgrades in the same transaction:
-        # Arch does not support partial upgrades, so installing after a bare
-        # -Sy could leave the system inconsistent. Failure is fatal.
-        run_as_root pacman -Syu --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
-    elif command -v zypper >/dev/null 2>&1; then
-        # openSUSE. The "devel_basis" pattern is the equivalent build-tool bundle.
-        run_as_root zypper install -y -t pattern devel_basis 2>/dev/null || \
-            run_as_root zypper install -y gcc gcc-c++ make || fatal "Failed to install build tools via zypper"
-    else
-        fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
-    fi
+    detect_pkg_manager >/dev/null
+    case "$PKG_MANAGER" in
+        dnf)
+            # Fedora / RHEL / CentOS Stream. Try the group first; fall back to
+            # explicit packages if the group name differs across versions.
+            run_as_root dnf group install -y development-tools 2>/dev/null ||
+                pkg_install gcc gcc-c++ make || fatal "Failed to install build tools via dnf"
+            ;;
+        apt-get)
+            # Debian / Ubuntu
+            pkg_install build-essential || fatal "Failed to install build-essential"
+            ;;
+        pacman)
+            # Arch / Manjaro. base-devel is a package group; a failure is fatal.
+            pkg_install base-devel || fatal "Failed to install base-devel via pacman"
+            ;;
+        zypper)
+            # openSUSE. The "devel_basis" pattern is the build-tool bundle.
+            run_as_root zypper install -y -t pattern devel_basis 2>/dev/null ||
+                pkg_install gcc gcc-c++ make || fatal "Failed to install build tools via zypper"
+            ;;
+    esac
 
     if ! command -v gcc >/dev/null 2>&1; then
         fatal "GCC still not available after installing build tools"
@@ -454,22 +528,7 @@ ensure_linux_packages() {
     [[ ${#missing[@]} -eq 0 ]] && return
 
     log "Installing Linux packages: ${missing[*]}"
-    if command -v dnf >/dev/null 2>&1; then
-        run_as_root dnf install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
-    elif command -v apt-get >/dev/null 2>&1; then
-        run_as_root apt-get update || true
-        run_as_root apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
-    elif command -v pacman >/dev/null 2>&1; then
-        # -Syu refreshes the sync databases (empty on a fresh Arch/Manjaro
-        # system, where a bare -S fails "target not found") and upgrades in the
-        # same transaction, since Arch does not support partial upgrades.
-        run_as_root pacman -Syu --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
-    elif command -v zypper >/dev/null 2>&1; then
-        run_as_root zypper refresh || true
-        run_as_root zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
-    else
-        fatal "No supported package manager found (tried dnf, apt-get, pacman, zypper)"
-    fi
+    pkg_install "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
 }
 
 # Repair a ca-certificates install whose post-install step failed because awk
@@ -659,14 +718,12 @@ resolve_unlinked_formulae() {
             # unattended (no TTY -> just print the manual steps below).
             linked=""
             if tty_available; then
-                {
-                    echo ""
-                    echo "Make Homebrew's '$formula' the active command by overwriting $conflict_path?"
-                    echo "  [y] Yes - run: brew link --overwrite $formula"
-                    echo "  [N] No  - leave it as-is and print the manual steps"
-                } > /dev/tty
-                read -rp "Overwrite? [y/N]: " ans < /dev/tty
-                if [[ "$(printf '%s' "${ans:-}" | tr 'A-Z' 'a-z')" == "y" ]]; then
+                ans=$(ask_choice "Overwrite? [y/N]: " \
+                    "" \
+                    "Make Homebrew's '$formula' the active command by overwriting $conflict_path?" \
+                    "  [y] Yes - run: brew link --overwrite $formula" \
+                    "  [N] No  - leave it as-is and print the manual steps")
+                if [[ "$ans" == "y" ]]; then
                     if brew link --overwrite "$formula" >/dev/null 2>&1; then
                         linked=1
                         log "  Linked Homebrew's '$formula' (ran: brew link --overwrite $formula)."
@@ -939,20 +996,18 @@ determine_conflict_mode() {
     # appear frozen.
     reset_tty
 
-    {
-        echo ""
-        echo "How should the differing files above be handled?"
-        echo "  [O] Overwrite all - install the profile versions (originals backed up as <name>.bak.$RUN_TS)"
-        echo "  [S] Skip all      - keep your existing files, install none of these"
-        echo "  [D] Decide per file"
-    } > /dev/tty
     local choice
-    read -rp "Choose [O/S/D]: " choice < /dev/tty
-    case "$(printf '%s' "${choice:-}" | tr 'A-Z' 'a-z')" in
+    choice=$(ask_choice "Choose [O/S/D]: " \
+        "" \
+        "How should the differing files above be handled?" \
+        "  [O] Overwrite all - install the profile versions (originals backed up as <name>.bak.$RUN_TS)" \
+        "  [S] Skip all      - keep your existing files, install none of these" \
+        "  [D] Decide per file")
+    case "$choice" in
         o) CONFLICT_MODE="overwrite" ;;
         d) CONFLICT_MODE="perfile" ;;
         s) CONFLICT_MODE="skip" ;;
-        *) log "Unrecognized choice '${choice:-}'; keeping existing files."; CONFLICT_MODE="skip" ;;
+        *) log "Unrecognized choice '$choice'; keeping existing files."; CONFLICT_MODE="skip" ;;
     esac
 }
 
@@ -962,8 +1017,8 @@ determine_conflict_mode() {
 resolve_one() {
     local src="$1" dest="$2" ans
     while true; do
-        read -rp "$(basename "$dest"): [o]verwrite / [s]kip / [d]iff? " ans < /dev/tty
-        case "$(printf '%s' "${ans:-}" | tr 'A-Z' 'a-z')" in
+        ans=$(ask_choice "$(basename "$dest"): [o]verwrite / [s]kip / [d]iff? ")
+        case "$ans" in
             o) backup_and_install "$src" "$dest"; return ;;
             s) log "Keeping existing $(basename "$dest")."; return ;;
             d)
@@ -996,8 +1051,8 @@ retire_stale_addon() {
 resolve_stale_addon() {
     local name="$1" ans
     while true; do
-        read -rp "$name is left over from the developer profile: [k]eep / [r]etire? " ans < /dev/tty
-        case "$(printf '%s' "${ans:-}" | tr 'A-Z' 'a-z')" in
+        ans=$(ask_choice "$name is left over from the developer profile: [k]eep / [r]etire? ")
+        case "$ans" in
             r) retire_stale_addon "$name"; return ;;
             k) log "Keeping $name; developer settings remain active."; STATUS_DOTFILES="kept"; return ;;
             *) echo "Please answer k or r." > /dev/tty ;;
@@ -1276,19 +1331,17 @@ determine_cleanup_mode() {
         return
     fi
 
-    {
-        echo ""
-        echo "The packages listed above are installed but not part of $BREWFILE."
-        echo "How should they be handled?"
-        echo "  [R] Remove them - uninstall the packages above (cannot be undone; Homebrew keeps no backup)"
-        echo "  [K] Keep them   - leave every installed package in place"
-    } > /dev/tty
     local choice
-    read -rp "Choose [R/K]: " choice < /dev/tty
-    case "$(printf '%s' "${choice:-}" | tr 'A-Z' 'a-z')" in
+    choice=$(ask_choice "Choose [R/K]: " \
+        "" \
+        "The packages listed above are installed but not part of $BREWFILE." \
+        "How should they be handled?" \
+        "  [R] Remove them - uninstall the packages above (cannot be undone; Homebrew keeps no backup)" \
+        "  [K] Keep them   - leave every installed package in place")
+    case "$choice" in
         r) CLEANUP_MODE="remove" ;;
         k) CLEANUP_MODE="skip" ;;
-        *) log "Unrecognized choice '${choice:-}'; keeping all packages."; CLEANUP_MODE="skip" ;;
+        *) log "Unrecognized choice '$choice'; keeping all packages."; CLEANUP_MODE="skip" ;;
     esac
 }
 
@@ -1390,13 +1443,12 @@ select_profile() {
         [[ -n "$BREWFILE" ]] || fatal "Invalid PROFILE='$PROFILE' (expected: developer or minimal)."
         log "Profile preselected via PROFILE=$PROFILE"
     elif tty_available; then
-        echo ""
-        echo "Select environment profile:"
-        echo "  1) Developer Workstation"
-        echo "  2) Minimal Host"
-        echo ""
-
-        read -rp "Enter 1 or 2: " choice < /dev/tty
+        choice=$(ask_choice "Enter 1 or 2: " \
+            "" \
+            "Select environment profile:" \
+            "  1) Developer Workstation" \
+            "  2) Minimal Host" \
+            "")
 
         case "$choice" in
             1) profile="developer" ;;

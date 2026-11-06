@@ -1067,6 +1067,113 @@ check "macOS developer add-on no longer exports EDITOR" \
     "$(grep -c 'EDITOR' "$SCRIPT_DIR/../macos/profile-developer/.zshrc.developer")" "0"
 
 # ---------------------------------------------------------------------------
+# Shared helpers: to_lower, detect_pkg_manager, pkg_install, ask_choice
+# ---------------------------------------------------------------------------
+check "to_lower lowercases" "$(to_lower 'Hello WORLD-1')" "hello world-1"
+check "to_lower of empty is empty" "$(to_lower '')" ""
+check "bootstrap.sh has no A-Z / a-z tr ranges" "$(grep -c "tr 'A-Z'" "$BOOTSTRAP")" "0"
+
+# Runs $2 with stub package managers named in $1 on PATH (nothing else but the
+# stub dir). run_as_root records its arguments to $tmp/calls and, for an install,
+# creates a gcc stub so install_build_tools sees its toolchain; when $3 is "group"
+# an install that mentions "group" fails, to exercise the explicit-package
+# fallback. Prints the recorded calls, one per line, after the snippet's output.
+pm_probe() {
+    (
+        tmp="$(mktemp -d)"
+        old_path="$PATH"; mode="${3:-}"
+        trap 'PATH="$old_path"; rm -rf "$tmp"' EXIT
+        mkdir -p "$tmp/bin"
+        # Only the stubs and the few tools the snippets themselves use are on PATH.
+        for c in cat rm chmod; do ln -s "$(command -v "$c")" "$tmp/bin/$c"; done
+        for c in $1; do printf '#!/bin/sh\n' > "$tmp/bin/$c"; chmod +x "$tmp/bin/$c"; done
+        : > "$tmp/calls"
+        PKG_MANAGER=""; APT_UPDATED=""; OS_TYPE=linux
+        fatal() { echo "FATAL: $*"; exit 1; }
+        run_as_root() {
+            echo "$*" >> "$tmp/calls"
+            if [[ "$*" == *group* && "$mode" == "group" ]]; then return 1; fi
+            if [[ "$*" == *install* ]]; then printf '#!/bin/sh\n' > "$tmp/bin/gcc"; chmod +x "$tmp/bin/gcc"; fi
+            return 0
+        }
+        PATH="$tmp/bin"
+        eval "$2"
+        echo "--"
+        cat "$tmp/calls"
+    )
+}
+check "detect_pkg_manager: apt-get only" \
+    "$(pm_probe 'apt-get' 'detect_pkg_manager' | tr '\n' '|')" "apt-get|--|"
+check "detect_pkg_manager: dnf wins over apt-get" \
+    "$(pm_probe 'apt-get dnf' 'detect_pkg_manager' | head -n1)" "dnf"
+check "detect_pkg_manager: pacman, then zypper" \
+    "$(pm_probe 'pacman' 'detect_pkg_manager' | head -n1) $(pm_probe 'zypper' 'detect_pkg_manager' | head -n1)" "pacman zypper"
+check "detect_pkg_manager: none is fatal" \
+    "$(pm_probe '' 'detect_pkg_manager' 2>&1 | head -n1)" \
+    "FATAL: No supported package manager found (tried dnf, apt-get, pacman, zypper)"
+check "detect_pkg_manager: result is cached" \
+    "$(pm_probe 'apt-get' 'detect_pkg_manager >/dev/null; rm "$tmp/bin/apt-get"; detect_pkg_manager' | head -n1)" "apt-get"
+check "pkg_install apt-get: one update before the first install only" \
+    "$(pm_probe 'apt-get' 'pkg_install a b; pkg_install c' | tr '\n' '|')" \
+    "--|apt-get update|apt-get install -y a b|apt-get install -y c|"
+check "pkg_install dnf" \
+    "$(pm_probe 'dnf' 'pkg_install a b' | tr '\n' '|')" "--|dnf install -y a b|"
+check "pkg_install pacman: full upgrade transaction" \
+    "$(pm_probe 'pacman' 'pkg_install a' | tr '\n' '|')" "--|pacman -Syu --needed --noconfirm a|"
+check "pkg_install zypper: refresh then install" \
+    "$(pm_probe 'zypper' 'pkg_install a' | tr '\n' '|')" "--|zypper refresh|zypper install -y a|"
+check "ensure_linux_packages routes through pkg_install (apt-get)" \
+    "$(pm_probe 'apt-get' 'ensure_linux_packages definitely-missing-a' | tr '\n' '|')" \
+    "--|apt-get update|apt-get install -y definitely-missing-a|"
+check "install_build_tools on apt: update runs before build-essential" \
+    "$(pm_probe 'apt-get' 'ensure_linux_packages() { :; }; install_build_tools' | tr '\n' '|')" \
+    "--|apt-get update|apt-get install -y build-essential|"
+check "install_build_tools on dnf: group install" \
+    "$(pm_probe 'dnf' 'ensure_linux_packages() { :; }; install_build_tools' | tr '\n' '|')" \
+    "--|dnf group install -y development-tools|"
+check "install_build_tools on dnf: group failure falls back to explicit packages" \
+    "$(pm_probe 'dnf' 'ensure_linux_packages() { :; }; install_build_tools' group | tr '\n' '|')" \
+    "--|dnf group install -y development-tools|dnf install -y gcc gcc-c++ make|"
+check "install_build_tools on zypper: pattern install" \
+    "$(pm_probe 'zypper' 'ensure_linux_packages() { :; }; install_build_tools' | tr '\n' '|')" \
+    "--|zypper install -y -t pattern devel_basis|"
+check "install_build_tools on zypper: pattern failure falls back to explicit packages" \
+    "$(pm_probe 'zypper' 'ensure_linux_packages() { :; }; run_as_root() { echo "$*" >> "$tmp/calls"; [[ "$*" != *pattern* ]] && { printf "#!/bin/sh\n" > "$tmp/bin/gcc"; chmod +x "$tmp/bin/gcc"; }; [[ "$*" != *pattern* ]]; }; install_build_tools' | tr '\n' '|')" \
+    "--|zypper install -y -t pattern devel_basis|zypper refresh|zypper install -y gcc gcc-c++ make|"
+
+# Prompt sites with ask_choice stubbed: $1 is the answer it returns (already
+# lowercased, as the real helper does). No test opens /dev/tty.
+ask_probe() {  # $1 answer, $2 snippet
+    (
+        tty_available() { return 0; }
+        reset_tty() { :; }
+        ask_choice() { echo "$ASK_ANSWER"; }
+        export ASK_ANSWER="$1"
+        eval "$2"
+    )
+}
+for ans_mode in "o:overwrite" "s:skip" "d:perfile" "x:skip"; do
+    check "determine_conflict_mode: answer '${ans_mode%%:*}' -> ${ans_mode#*:}" \
+        "$(ask_probe "${ans_mode%%:*}" 'DOTFILES_CONFLICT=""; determine_conflict_mode; echo "$CONFLICT_MODE"')" "${ans_mode#*:}"
+done
+for ans_mode in "r:remove" "k:skip" "x:skip"; do
+    check "determine_cleanup_mode: answer '${ans_mode%%:*}' -> ${ans_mode#*:}" \
+        "$(ask_probe "${ans_mode%%:*}" 'CLEANUP=""; determine_cleanup_mode; echo "$CLEANUP_MODE"')" "${ans_mode#*:}"
+done
+check "select_profile: menu answer 1 -> developer" \
+    "$(ask_probe 1 'unset PROFILE; select_profile; echo "$BREWFILE"')" "Brewfile-developer"
+check "select_profile: menu answer 2 -> minimal" \
+    "$(ask_probe 2 'unset PROFILE; select_profile; echo "$BREWFILE"')" "Brewfile-minimal"
+check "select_profile: any other answer is fatal" \
+    "$(ask_probe 9 'unset PROFILE; select_profile' | tail -n1)" "FATAL: Invalid choice."
+check "resolve_one: answer o backs up and installs" \
+    "$(ask_probe o 'RUN_TS=TS; HOME=$(mktemp -d); echo new > "$HOME/src"; echo old > "$HOME/dest"; resolve_one "$HOME/src" "$HOME/dest"; cat "$HOME/dest" "$HOME/dest.bak.TS" | tr "\n" " "; rm -rf "$HOME"')" "new old "
+check "resolve_one: answer s keeps the existing file" \
+    "$(ask_probe s 'RUN_TS=TS; HOME=$(mktemp -d); echo new > "$HOME/src"; echo old > "$HOME/dest"; resolve_one "$HOME/src" "$HOME/dest"; cat "$HOME/dest"; rm -rf "$HOME"')" "old"
+check "resolve_stale_addon: answer r retires the add-on" \
+    "$(ask_probe r 'RUN_TS=TS; HOME=$(mktemp -d); echo a > "$HOME/.bashrc.developer"; resolve_stale_addon .bashrc.developer; ls -A "$HOME" | tr "\n" " "; rm -rf "$HOME"')" ".bashrc.developer.bak.TS "
+
+# ---------------------------------------------------------------------------
 # Arch: one full-upgrade transaction, failure is fatal
 # ---------------------------------------------------------------------------
 # Runs $2 with pacman as the only package manager. run_as_root records its
