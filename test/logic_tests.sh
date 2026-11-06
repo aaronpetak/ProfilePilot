@@ -457,6 +457,10 @@ check "missing_linux_packages: nothing requested -> nothing missing" \
 # ---------------------------------------------------------------------------
 check "brew update failure is tolerated" \
     "$(grep -c '^[[:space:]]*brew update || log ' "$BOOTSTRAP")" "1"
+check "tap-trust check is not disabled" \
+    "$(grep -c 'HOMEBREW_NO_REQUIRE_TAP_TRUST' "$BOOTSTRAP")" "0"
+check "every Brewfile tap declares trusted: true" \
+    "$(grep -h '^tap ' "$SCRIPT_DIR"/../universal/brewfiles/Brewfile-* | grep -vc 'trusted: true')" "0"
 
 # ---------------------------------------------------------------------------
 # Summary
