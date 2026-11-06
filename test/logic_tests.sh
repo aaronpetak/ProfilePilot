@@ -914,6 +914,41 @@ check "no legacy note when .bash_environment is absent" \
         apply_dotfiles profile-minimal bash linux | grep -c "bash_environment"')" "0"
 
 # ---------------------------------------------------------------------------
+# .shell_aliases: here and tf_init check for their tool when called
+# ---------------------------------------------------------------------------
+ALIASES="$SCRIPT_DIR/../universal/.shell_aliases"
+# Run a snippet in a fresh interactive-style shell ($1 = shell) that sources
+# .shell_aliases first, in an empty temp dir. A stub directory $tmp/bin holds
+# whatever commands the snippet creates; PATH is only that plus the system dirs.
+aliases_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        mkdir -p "$tmp/bin" "$tmp/work"
+        cd "$tmp/work" || exit 1
+        # PATH keeps system dirs for coreutils; the tools under test are never there.
+        TMP="$tmp" ALIASES="$ALIASES" PATH="$tmp/bin:/usr/bin:/bin" "$(command -v "$1")" -c ". \"\$ALIASES\"; $2" 2>&1 | sed "s#$tmp#TMP#g"
+    )
+}
+for sh in bash zsh; do
+    command -v "$sh" >/dev/null 2>&1 || { echo "SKIP: $sh not installed"; continue; }
+    check "$sh: here without mkvirtualenv prints an error and fails" \
+        "$(aliases_probe "$sh" 'here; echo "rc=$?"' | tr '\n' ' ')" \
+        "here: mkvirtualenv not found (install virtualenvwrapper and load virtualenvwrapper.sh). rc=1 "
+    check "$sh: here finds mkvirtualenv defined after the aliases were sourced" \
+        "$(aliases_probe "$sh" 'mkvirtualenv() { echo "mk $*"; }; here myenv; echo "rc=$?"' | sed "s#$PWD#PWD#" | tr '\n' ' ')" \
+        "mk -a TMP/work myenv rc=0 "
+    check "$sh: here replaces an older alias of the same name" \
+        "$(aliases_probe "$sh" 'alias here="echo shadow"; . "$ALIASES"; alias here 2>/dev/null | wc -l | tr -d " "; type here | head -n1 | grep -c function' | tr '\n' ' ')" "0 1 "
+    check "$sh: tf_init without terraform prints an error, creates nothing" \
+        "$(aliases_probe "$sh" 'tf_init; echo "rc=$?"; ls | wc -l | tr -d " "' | tr '\n' ' ')" \
+        "tf_init: terraform not found on PATH. rc=1 0 "
+    check "$sh: tf_init with terraform creates the standard files" \
+        "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; tf_init >/dev/null; ls | tr "\n" " "')" \
+        "README.md backend.tf locals.tf main.tf outputs.tf providers.tf terraform.tf variables.tf "
+done
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
