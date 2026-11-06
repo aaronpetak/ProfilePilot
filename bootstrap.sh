@@ -468,7 +468,11 @@ install_build_tools() {
     # post-install silently fails, leaving a broken cert.pem that makes every
     # TLS-using Homebrew tool (brew update, brew's curl/git, tflint download)
     # fail with "unable to get local issuer certificate". Ensure it up front.
-    ensure_linux_packages unzip bubblewrap:bwrap gawk:awk
+    #
+    # diffutils provides cmp and diff, which items_identical uses to compare
+    # existing dotfiles with the source before apply_dotfiles runs. Minimal
+    # images (Rocky 8) lack it, which makes every existing file look different.
+    ensure_linux_packages unzip bubblewrap:bwrap gawk:awk diffutils:cmp
 
     if command -v gcc >/dev/null 2>&1; then
         log "Build tools already installed."
