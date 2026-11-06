@@ -165,6 +165,91 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# Git identity in ~/.gitconfig.local
+# Each case runs in a subshell against a throwaway HOME; the real $HOME and
+# global git config are never read or written.
+# ---------------------------------------------------------------------------
+GITCONFIG_SRC="$SCRIPT_DIR/../universal/.gitconfig"
+
+# Run a snippet with identity helpers loaded, a temp HOME seeded with the
+# shipped .gitconfig, and no TTY. $1 is the snippet; it may use $HOME.
+identity_env() {
+    (
+        tmp_home="$(mktemp -d)"
+        trap 'rm -rf "$tmp_home"' EXIT
+        export HOME="$tmp_home"
+        unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_NAME GIT_EMAIL
+        export GIT_CONFIG_NOSYSTEM=1
+        log() { :; }
+        tty_available() { return 1; }
+        # shellcheck disable=SC2034  # read by the eval-ed helpers.
+        STATUS_GITCONFIG="unknown"
+        eval "$(extract_fn is_identity_placeholder)"
+        eval "$(extract_fn migrate_gitconfig_identity)"
+        eval "$(extract_fn verify_git_identity)"
+        eval "$(extract_fn personalize_gitconfig)"
+        cp "$GITCONFIG_SRC" "$HOME/.gitconfig"
+        eval "$1"
+    )
+}
+
+check "identity written to .gitconfig.local and resolved via include" \
+    "$(identity_env 'GIT_NAME="Ada L" GIT_EMAIL="ada@example.com" personalize_gitconfig
+        echo "$STATUS_GITCONFIG $(git config --global --includes user.name) $(git config --file "$HOME/.gitconfig.local" user.email)"')" \
+    "personalized Ada L ada@example.com"
+
+check "no identity and no tty -> incomplete, nothing written" \
+    "$(identity_env 'personalize_gitconfig; echo "$STATUS_GITCONFIG $(test -e "$HOME/.gitconfig.local" && echo file || echo nofile)"')" \
+    "incomplete nofile"
+
+check "newline in name is rejected" \
+    "$(identity_env 'GIT_NAME="a
+b" GIT_EMAIL="x@y.z" personalize_gitconfig; echo "$STATUS_GITCONFIG $(test -e "$HOME/.gitconfig.local" && echo file || echo nofile)"')" \
+    "incomplete nofile"
+
+check "sed-special characters are stored verbatim" \
+    "$(identity_env 'GIT_NAME="A & B/C\\D" GIT_EMAIL="a+b@x.io" personalize_gitconfig; git config --global --includes user.name')" \
+    'A & B/C\D'
+
+check "existing .gitconfig.local identity is kept" \
+    "$(identity_env 'git config --file "$HOME/.gitconfig.local" user.name Old
+        git config --file "$HOME/.gitconfig.local" user.email old@x.io
+        personalize_gitconfig; echo "$STATUS_GITCONFIG $(git config --global --includes user.name)"')" \
+    "already Old"
+
+check "old .gitconfig without include -> incomplete" \
+    "$(identity_env 'printf "[init]\n    defaultBranch = main\n" > "$HOME/.gitconfig"
+        GIT_NAME=N GIT_EMAIL=n@x.io personalize_gitconfig; echo "$STATUS_GITCONFIG"')" \
+    "incomplete"
+
+check "migration copies a real identity into .gitconfig.local" \
+    "$(identity_env 'printf "[user]\n    name = Real Name\n    email = real@x.io\n" > "$HOME/.gitconfig"
+        migrate_gitconfig_identity
+        echo "$(git config --file "$HOME/.gitconfig.local" user.name) $(git config --file "$HOME/.gitconfig.local" user.email)"')" \
+    "Real Name real@x.io"
+
+check "migration skips placeholder values" \
+    "$(identity_env 'printf "[user]\n    name = {FULL NAME}\n    email = {GITHUB EMAIL}\n" > "$HOME/.gitconfig"
+        migrate_gitconfig_identity; test -e "$HOME/.gitconfig.local" && echo file || echo nofile')" \
+    "nofile"
+
+check "migration does not overwrite an existing .gitconfig.local value" \
+    "$(identity_env 'printf "[user]\n    name = Old Name\n" > "$HOME/.gitconfig"
+        git config --file "$HOME/.gitconfig.local" user.name Kept
+        migrate_gitconfig_identity; git config --file "$HOME/.gitconfig.local" user.name')" \
+    "Kept"
+
+# Include order: a per-directory includeIf identity must override the
+# ~/.gitconfig.local identity (the include sits at the top of .gitconfig).
+check "includeIf identity overrides .gitconfig.local" \
+    "$(identity_env 'mkdir -p "$HOME/projects/github/repo"
+        git init -q "$HOME/projects/github/repo"
+        git config --file "$HOME/.gitconfig.local" user.name Local
+        printf "[user]\n    name = PerDir\n" > "$HOME/projects/github/.gitconfig"
+        cd "$HOME/projects/github/repo" && git config user.name')" \
+    "PerDir"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
