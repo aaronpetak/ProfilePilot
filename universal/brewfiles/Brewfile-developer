@@ -18,7 +18,7 @@ brew "sinelaw/fresh/fresh"        # Fresh terminal text editor (fresh-editor is 
 brew "ripgrep"                    # Fast search utility
 brew "tmux"                       # Terminal multiplexer
 brew "tree"                       # Directory tree viewer
-brew "tldr"                       # Simplified manual pages
+brew "tlrc"                       # Simplified manual pages (provides the tldr command)
 brew "age"                        # Modern encryption tool
 brew "gnupg"                      # GPG encryption/signing
 brew "ipcalc"                     # IPv4/IPv6 subnet calculator
