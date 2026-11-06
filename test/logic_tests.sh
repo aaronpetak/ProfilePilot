@@ -508,6 +508,10 @@ check "missing_linux_packages: gawk:awk is satisfied by an awk without gawk" \
     "$(pkg_probe 'awk' gawk:awk)" ""
 check "missing_linux_packages: gawk:awk reports gawk when neither exists" \
     "$(pkg_probe 'unzip' gawk:awk)" "gawk "
+check "missing_linux_packages: diffutils:cmp reports diffutils when cmp is absent" \
+    "$(pkg_probe 'unzip' diffutils:cmp)" "diffutils "
+check "missing_linux_packages: diffutils:cmp is satisfied by cmp" \
+    "$(pkg_probe 'cmp' diffutils:cmp)" ""
 check "missing_linux_packages: nothing requested -> nothing missing" \
     "$(pkg_probe '')" ""
 
