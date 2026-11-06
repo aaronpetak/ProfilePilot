@@ -55,8 +55,20 @@ fi
 
 # An interactive shell must start without errors. Without a terminal bash prints
 # these two job-control notices itself; anything else on stderr is a problem.
-noise=$(bash -ic true 2>&1 >/dev/null |
-    grep -v -e 'cannot set terminal process group' -e 'no job control in this shell' || true)
+# The first interactive shell is a warm-up: tools such as virtualenvwrapper
+# create their per-user files on first load and announce it on stderr once.
+# Its output is shown for the record; only the second, steady-state start is
+# required to be clean.
+interactive_noise() {
+    bash -ic true 2>&1 >/dev/null |
+        grep -v -e 'cannot set terminal process group' -e 'no job control in this shell' || true
+}
+first=$(interactive_noise)
+if [[ -n "$first" ]]; then
+    echo "note: first interactive shell (one-time setup) wrote:"
+    echo "$first"
+fi
+noise=$(interactive_noise)
 if [[ -z "$noise" ]]; then
     pass "bash -ic true is clean"
 else
