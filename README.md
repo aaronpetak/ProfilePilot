@@ -1,5 +1,9 @@
 # ProfilePilot
 
+[![CI](https://github.com/aaronpetak/ProfilePilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aaronpetak/ProfilePilot/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/aaronpetak/ProfilePilot?sort=semver)](https://github.com/aaronpetak/ProfilePilot/releases/latest)
+[![License](https://img.shields.io/github/license/aaronpetak/ProfilePilot)](LICENSE)
+
 Provisioning for a fresh macOS or Linux machine: a `bootstrap.sh` script plus the Homebrew package lists (Brewfiles) and shell configuration (dotfiles) it installs. It installs Homebrew if needed, installs a profile's packages, applies the profile's dotfiles, and writes your git identity.
 
 ## Quick Start
@@ -9,6 +13,12 @@ f="$(mktemp)" && curl -fsSL https://raw.githubusercontent.com/aaronpetak/Profile
 ```
 
 The script detects your OS, asks you to pick a profile (Developer or Minimal), and sets up the machine. It must run as a normal user with `sudo` access: Homebrew refuses to install as root, and the Linux distro-package steps use `sudo`.
+
+That command tracks `main`. To install a fixed [release](https://github.com/aaronpetak/ProfilePilot/releases) instead, download the script from the release tag and point it at the same tag. Without `DOTFILES_REF`, the downloaded script would still fetch its files from `main`:
+
+```bash
+v=v0.1.0; f="$(mktemp)" && curl -fsSL "https://raw.githubusercontent.com/aaronpetak/ProfilePilot/$v/bootstrap.sh" -o "$f" && DOTFILES_REF="$v" bash "$f"
+```
 
 Piping the script (`curl -fsSL .../bootstrap.sh | bash`) also works. A piped script has no file next to it, so it takes the tarball path described below, and prompts still reach you through `/dev/tty`.
 
@@ -33,7 +43,7 @@ Supported platforms: macOS, and glibc-based Linux using `apt-get`, `dnf`, `pacma
 
 ```bash
 # A fork, pinned to a tag
-DOTFILES_REPO_SLUG=your-user/ProfilePilot DOTFILES_REF=v1.2.0 bash "$f"
+DOTFILES_REPO_SLUG=your-user/ProfilePilot DOTFILES_REF=v0.1.0 bash "$f"
 ```
 
 Both variables only matter in tarball mode; a local checkout ignores them.
@@ -79,7 +89,17 @@ ProfilePilot/
 ├── test/
 │   ├── logic_tests.sh                # Unit tests for bootstrap.sh and the dotfiles
 │   └── ci/                           # Scripts used by the CI smoke jobs
-└── .github/workflows/ci.yml
+├── .github/
+│   ├── workflows/ci.yml              # Lint, logic tests and smoke runs
+│   ├── ISSUE_TEMPLATE/               # Bug report and feature request forms
+│   ├── pull_request_template.md
+│   ├── CODEOWNERS
+│   └── dependabot.yml                # Weekly GitHub Actions updates
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+├── SECURITY.md
+└── LICENSE                           # Apache License 2.0
 ```
 
 The shell is chosen by the OS, not by `$SHELL`: macOS gets the zsh files, Linux gets the bash files.
@@ -235,6 +255,29 @@ To add a profile such as `security`:
 3. If it needs extra shell config, add `macos/profile-security/.zshrc.security` and `linux/profile-security/.bashrc.security`, and teach `shell_addon_name_for` and `shell_addon_for` about them. The base rc must source the add-on last, or the `PROMPT_COMMAND` invariant is lost.
 4. If it needs extra directories, list them in `profile_specific_dirs_for`.
 5. Add tests to `test/logic_tests.sh`.
+
+### Releasing
+
+Versions follow [Semantic Versioning](https://semver.org); before 1.0.0, a minor bump may change environment variables or installed files incompatibly.
+
+1. In `CHANGELOG.md`, rename the `Unreleased` section to the new version and date, add a fresh empty `Unreleased` above it, and update the compare links at the bottom. Merge that through a pull request.
+2. Tag the merged commit on `main` and publish the release with that changelog section as its notes:
+
+   ```bash
+   git switch main && git pull
+   git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+   gh release create v0.2.0 --verify-tag --title "v0.2.0" --notes-file <(awk '/^## \[0.2.0\]/{f=1;next} /^## \[|^\[.*\]: /{f=0} f' CHANGELOG.md)
+   ```
+
+3. Update the `v=` value in the pinned install command in [Quick Start](#quick-start).
+
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the rules the code has to keep, and how to run the tests. Report security problems privately as described in [SECURITY.md](SECURITY.md). Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Copyright 2026 Aaron Petak and contributors. Licensed under the [Apache License 2.0](LICENSE).
 
 ## Related Links
 
