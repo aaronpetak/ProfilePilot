@@ -587,7 +587,7 @@ main_probe() {
             fakeroot-pipe) env HOME="$tmp/home" PATH="$tmp/bin:$PATH" PROFILE=minimal bash < "$BOOTSTRAP" 2>&1 ;;
         esac
         echo "rc=$?"
-        test -e "$tmp/home/.local/state/homebrew-restore.log" -o -e "$tmp/home/Library/Logs/homebrew-restore.log" && echo "logged-in-temp-home"
+        test -e "$tmp/home/.local/state/profilepilot.log" -o -e "$tmp/home/Library/Logs/profilepilot.log" && echo "logged-in-temp-home"
     )
 }
 
@@ -705,9 +705,9 @@ logdir_probe() {
     )
 }
 check "init_logging: Linux log under ~/.local/state" \
-    "$(logdir_probe linux-gnu)" "home/.local/state/homebrew-restore.log dir-exists"
+    "$(logdir_probe linux-gnu)" "home/.local/state/profilepilot.log dir-exists"
 check "init_logging: macOS log under ~/Library/Logs" \
-    "$(logdir_probe darwin24)" "home/Library/Logs/homebrew-restore.log dir-exists"
+    "$(logdir_probe darwin24)" "home/Library/Logs/profilepilot.log dir-exists"
 
 check "log with no LOGFILE prints to stdout only" \
     "$( (eval "$REAL_LOG_DEF"; LOGFILE=""; log hello) | sed 's/^\[[^]]*\] //')" "hello"

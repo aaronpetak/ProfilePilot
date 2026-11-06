@@ -1403,7 +1403,7 @@ init_logging() {
         logdir="$HOME/.local/state"
     fi
     mkdir -p "$logdir"
-    LOGFILE="$logdir/homebrew-restore.log"
+    LOGFILE="$logdir/profilepilot.log"
 }
 
 # Determine the platform once, setting OS_TYPE and OS_DOTFILES_DIR.
