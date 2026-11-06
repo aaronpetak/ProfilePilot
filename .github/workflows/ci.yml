@@ -92,6 +92,11 @@ jobs:
     env:
       PR_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
       PR_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+      # A private copy of this repository cannot be downloaded anonymously, so
+      # there the run gets the workflow's read-only token and exercises the
+      # token retry. A public repository gets no token and keeps testing the
+      # anonymous download that the curl one-liner relies on.
+      GH_TOKEN: ${{ github.event.repository.private && github.token || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,6 +118,10 @@ jobs:
 
       - name: assert tarball mode
         run: bash test/ci/assert-log-mode.sh "$RUNNER_TEMP/bootstrap.log" tarball
+
+      - name: assert the token retry ran (private repository only)
+        if: github.event.repository.private
+        run: grep -q 'Downloaded with a GitHub token' "$RUNNER_TEMP/bootstrap.log"
 
       - name: assert installed result
         run: bash test/ci/assert-linux.sh "$GITHUB_WORKSPACE" minimal

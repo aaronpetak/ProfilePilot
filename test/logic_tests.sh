@@ -808,6 +808,95 @@ check "resolve_source: piped script downloads the tarball into the workspace" \
 check "resolve_source: a Brewfile missing from the source is fatal" \
     "$(source_probe without-brewfile | tail -n1 | cut -c1-22)" "FATAL: Brewfile not fo"
 
+check "the API tarball URL follows DOTFILES_REPO_SLUG and DOTFILES_REF" \
+    "$(DOTFILES_REPO_SLUG=acme/dots DOTFILES_REF=v1.2.3 bash -c 'source "$1"; echo "$DOTFILES_API_TARBALL_URL"' _ "$BOOTSTRAP")" \
+    "https://api.github.com/repos/acme/dots/tarball/v1.2.3"
+
+# fetch_source_tarball with curl, gh, the prompt and unpacking stubbed. Prints
+# the outcome ("unpacked" or the FATAL line), then one line per curl call:
+# "<host> hdr=<header curl read on stdin> argv=<clean|TOKEN>". argv=TOKEN means a
+# token appeared in curl's arguments, where a process listing would show it.
+# "token logged" is printed if a token reached log().
+# $1 = HTTP code of the anonymous request (000 = curl itself fails),
+# $2 = exit status of the authenticated request, $3 = scenario setup.
+# Every test token starts with "tok-".
+fetch_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        WORKDIR="$tmp"
+        DOTFILES_REPO_SLUG=o/r
+        DOTFILES_REF=main
+        DOTFILES_TARBALL_URL=https://codeload.github.com/o/r/tar.gz/main
+        DOTFILES_API_TARBALL_URL=https://api.github.com/repos/o/r/tarball/main
+        unset GH_TOKEN GITHUB_TOKEN
+        ANON="$1" AUTH="$2"
+        log() { printf '%s\n' "$*" >> "$tmp/log"; }
+        unpack_source_tarball() { echo "unpacked"; }
+        gh() { return 1; }    # installed but not logged in
+        reset_tty() { :; }
+        ask_secret() { echo "unexpected prompt" >> "$tmp/calls"; }
+        curl() {
+            local arg url="" hdr="" argv=clean
+            for arg in "$@"; do
+                case "$arg" in https://*) url="${arg#https://}" ;; esac
+                case "$arg" in *tok-*) argv=TOKEN ;; esac
+            done
+            case " $* " in *" -H @- "*) hdr="$(cat)" ;; esac
+            echo "${url%%/*} hdr=${hdr:-none} argv=$argv" >> "$tmp/calls"
+            if [[ "$url" == codeload.* ]]; then
+                if [[ "$ANON" == 000 ]]; then
+                    echo "curl: (6) Could not resolve host: codeload.github.com" >&2
+                    printf '000'
+                    return 6
+                fi
+                printf '%s' "$ANON"
+                return 0
+            fi
+            return "$AUTH"
+        }
+        eval "$3"
+        ( fetch_source_tarball "$tmp/out" )
+        cat "$tmp/calls"
+        if grep -q 'tok-' "$tmp/log"; then echo "token logged"; fi
+    )
+}
+ANON_CALL="codeload.github.com hdr=none argv=clean"
+
+check "fetch: a public repo downloads anonymously, even when a token is set" \
+    "$(fetch_probe 200 0 'GH_TOKEN=tok-env' | tr '\n' ' ')" \
+    "unpacked $ANON_CALL "
+check "fetch: a 404 retries through the API with GH_TOKEN, sent on stdin" \
+    "$(fetch_probe 404 0 'GH_TOKEN=tok-gh; GITHUB_TOKEN=tok-github' | tr '\n' ' ')" \
+    "unpacked $ANON_CALL api.github.com hdr=Authorization: Bearer tok-gh argv=clean "
+check "fetch: GITHUB_TOKEN is used when GH_TOKEN is unset" \
+    "$(fetch_probe 404 0 'GITHUB_TOKEN=tok-github' | tr '\n' ' ')" \
+    "unpacked $ANON_CALL api.github.com hdr=Authorization: Bearer tok-github argv=clean "
+check "fetch: a logged-in gh CLI supplies the token" \
+    "$(fetch_probe 404 0 'gh() { [[ "$*" == "auth token" ]] && echo tok-cli; }' | tr '\n' ' ')" \
+    "unpacked $ANON_CALL api.github.com hdr=Authorization: Bearer tok-cli argv=clean "
+check "fetch: with no other token, a terminal prompt supplies it" \
+    "$(fetch_probe 404 0 'tty_available() { return 0; }; ask_secret() { echo tok-typed; }' | tr '\n' ' ')" \
+    "unpacked $ANON_CALL api.github.com hdr=Authorization: Bearer tok-typed argv=clean "
+check "fetch: an environment token wins over gh and the prompt" \
+    "$(fetch_probe 404 0 'GITHUB_TOKEN=tok-github; gh() { echo tok-cli; }; tty_available() { return 0; }; ask_secret() { echo tok-typed; }' | tr '\n' ' ')" \
+    "unpacked $ANON_CALL api.github.com hdr=Authorization: Bearer tok-github argv=clean "
+check "fetch: a 404 with no token and no terminal is fatal and names GH_TOKEN" \
+    "$(fetch_probe 404 0 '' | tr '\n' ' ')" \
+    "FATAL: Failed to download https://codeload.github.com/o/r/tar.gz/main (HTTP 404). If o/r is private, set GH_TOKEN to a GitHub token that can read it; otherwise check DOTFILES_REPO_SLUG and DOTFILES_REF. $ANON_CALL "
+check "fetch: an empty answer at the prompt is fatal" \
+    "$(fetch_probe 404 0 'tty_available() { return 0; }; ask_secret() { echo; }' | tr '\n' ' ')" \
+    "FATAL: Failed to download https://codeload.github.com/o/r/tar.gz/main (HTTP 404). If o/r is private, set GH_TOKEN to a GitHub token that can read it; otherwise check DOTFILES_REPO_SLUG and DOTFILES_REF. $ANON_CALL "
+check "fetch: a failed token download is fatal" \
+    "$(fetch_probe 404 22 'GH_TOKEN=tok-gh' | tr '\n' ' ')" \
+    "FATAL: Failed to download o/r @ main with the GitHub token. Check that the token can read the repository and that the ref exists. $ANON_CALL api.github.com hdr=Authorization: Bearer tok-gh argv=clean "
+check "fetch: a network failure is fatal, shows curl's error and asks for no token" \
+    "$(fetch_probe 000 0 'GH_TOKEN=tok-gh; tty_available() { return 0; }' | tr '\n' ' ')" \
+    "FATAL: Failed to download https://codeload.github.com/o/r/tar.gz/main: curl: (6) Could not resolve host: codeload.github.com $ANON_CALL "
+check "fetch: an HTTP error other than 404 is fatal without a token retry" \
+    "$(fetch_probe 500 0 'GH_TOKEN=tok-gh' | tr '\n' ' ')" \
+    "FATAL: Failed to download https://codeload.github.com/o/r/tar.gz/main (HTTP 500). $ANON_CALL "
+
 # brew stub that records its arguments, one call per line.
 packages_probe() {
     (

@@ -48,6 +48,25 @@ DOTFILES_REPO_SLUG=your-user/ProfilePilot DOTFILES_REF=v0.1.0 bash "$f"
 
 Both variables only matter in tarball mode; a local checkout ignores them.
 
+### Private repositories
+
+The first download is always anonymous, so a public repository never needs a token. GitHub answers an anonymous request for a private repository with a 404, and on a 404 the script retries once through the GitHub API (`https://api.github.com/repos/<slug>/tarball/<ref>`) with a token. It takes the first of:
+
+1. `GH_TOKEN`
+2. `GITHUB_TOKEN`
+3. `gh auth token`, when the GitHub CLI is installed and logged in
+4. a hidden prompt, when a terminal is available
+
+The token is handed to curl on stdin, so it never appears in a process listing, and it is never written to the log. A [fine-grained token](https://github.com/settings/personal-access-tokens/new) with read-only **Contents** access to that one repository is enough.
+
+Downloading the script from a private repository needs the token too. This works in bash and zsh, and the script reuses the exported `GH_TOKEN` (replace `<owner>/<repo>`):
+
+```bash
+printf 'GitHub token: ' && read -rs GH_TOKEN && echo && export GH_TOKEN
+f="$(mktemp)" && printf 'Authorization: Bearer %s\n' "$GH_TOKEN" | curl -fsSL -H @- -o "$f" \
+  "https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap.sh" && DOTFILES_REPO_SLUG=<owner>/<repo> bash "$f"
+```
+
 ## Environment Variables
 
 | Variable | Values / default | Effect |
@@ -60,6 +79,7 @@ Both variables only matter in tarball mode; a local checkout ignores them.
 | `GIT_EMAIL` | text | Git `user.email`, written to `~/.gitconfig.local`. Unset: prompted when a terminal is available. |
 | `DOTFILES_REPO_SLUG` | `owner/repo`, default `aaronpetak/ProfilePilot` | Repository the tarball is fetched from (tarball mode only). |
 | `DOTFILES_REF` | branch, tag or SHA, default `main` | Ref of that repository to fetch (tarball mode only). |
+| `GH_TOKEN`, `GITHUB_TOKEN` | a GitHub token | Used only when the anonymous tarball download gets a 404, as it does for a [private repository](#private-repositories). `GH_TOKEN` wins when both are set. |
 | `BREW_BUNDLE_ATTEMPTS` | number, default `3` | How many times `brew bundle` is tried. |
 | `BREW_BUNDLE_RETRY_DELAY` | seconds, default `5` | Pause between `brew bundle` attempts. |
 
@@ -232,7 +252,7 @@ CI (`.github/workflows/ci.yml`) runs these jobs:
 - **lint**: shellcheck on all scripts and on the bash dotfiles and `.shell_aliases`, `bash -n` on every bash file, `zsh -n` on the zsh files and `.shell_aliases`.
 - **tests**: `test/logic_tests.sh` on Ubuntu, and on macOS under the stock `/bin/bash` 3.2 that `bootstrap.sh` must support.
 - **smoke-linux**: runs `bootstrap.sh` with the minimal profile as a non-root sudo user in bare `ubuntu:24.04`, `fedora:latest`, `rockylinux/rockylinux:8`, `archlinux:latest` and `opensuse/tumbleweed` containers, where only `sudo` is preinstalled, then checks `brew`, `jq`, `rg`, `tmux`, the git identity, `~/.bashrc` and a clean `bash -ic true`.
-- **smoke-tarball**: runs a lone copy of `bootstrap.sh` against the commit under test, which exercises the tarball path with an already installed Homebrew.
+- **smoke-tarball**: runs a lone copy of `bootstrap.sh` against the commit under test, which exercises the tarball path with an already installed Homebrew. In a private copy of the repository it gets the workflow's read-only token and checks that the token retry ran.
 - **smoke-developer**: runs the developer profile on Ubuntu, covering the taps and the tflint checksum path.
 - **smoke-macos**: runs `bootstrap.sh` end to end under `/bin/bash` 3.2 with the minimal profile and checks a login zsh.
 
