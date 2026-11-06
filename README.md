@@ -90,7 +90,7 @@ The shell is chosen by the OS, not by `$SHELL`: macOS gets the zsh files, Linux 
 
 Installs `Brewfile-developer` and the developer add-on for your shell. The Brewfile covers these categories:
 
-- Core CLI tools: `bat`, `direnv`, `fzf`, `git`, `gh`, `htop`, `jq`, `ripgrep`, `tmux`, `tree`, `tldr`, `age`, `gnupg`, `ipcalc`, the `fresh` editor
+- Core CLI tools: `bat`, `direnv`, `fzf`, `git`, `gh`, `htop`, `jq`, `ripgrep`, `tmux`, `tree`, `tlrc` (the `tldr` command), `age`, `gnupg`, `ipcalc`, the `fresh` editor
 - Programming language: Go
 - Networking: `iperf3`, `mtr`, `nmap`, `speedtest-cli`
 - Cloud and Kubernetes: `kubectl`, `kubectx`, `stern`, `awscli`, `aws-sso-cli`, `step`, `grpcurl`
