@@ -96,13 +96,16 @@ tf_init() {
         return 1
     fi
     dir_name=$(basename "$PWD")
-    touch README.md backend.tf main.tf variables.tf outputs.tf providers.tf locals.tf terraform.tf
-    cat > README.md <<EOF
+    touch backend.tf main.tf variables.tf outputs.tf providers.tf locals.tf terraform.tf
+    # Only write the README skeleton when there is none; never overwrite one.
+    if [ ! -e README.md ]; then
+        cat > README.md <<EOF
 # $dir_name
 
 <!-- BEGIN_TF_DOCS -->
 <!-- END_TF_DOCS -->
 
 EOF
+    fi
     echo "Terraform files created in $dir_name."
 }
