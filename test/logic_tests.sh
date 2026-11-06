@@ -419,6 +419,40 @@ check "bootstrap creates its workspace with mktemp -d" \
     "$(grep -c '^WORKDIR="\$(mktemp -d)"$' "$BOOTSTRAP")" "1"
 
 # ---------------------------------------------------------------------------
+# package:command parsing (missing_linux_packages)
+# PATH is restricted to a temp dir of fake executables, so only those commands
+# count as installed.
+# ---------------------------------------------------------------------------
+pkg_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        eval "$(extract_fn missing_linux_packages)"
+        for c in $1; do printf '#!/bin/sh\n' > "$tmp/$c"; chmod +x "$tmp/$c"; done
+        shift
+        # Only the fake commands are on PATH while the function runs; the
+        # result is collected with builtins and PATH restored before cleanup.
+        local_path="$PATH"
+        PATH="$tmp"
+        out=""
+        while IFS= read -r p; do out="$out$p "; done < <(missing_linux_packages "$@")
+        PATH="$local_path"
+        printf '%s' "$out"
+    )
+}
+
+check "missing_linux_packages: bare names use the name as the command" \
+    "$(pkg_probe 'unzip' unzip gawk)" "gawk "
+check "missing_linux_packages: package:command checks the command" \
+    "$(pkg_probe 'bwrap' bubblewrap:bwrap)" ""
+check "missing_linux_packages: package:command reports the package name" \
+    "$(pkg_probe 'unzip' bubblewrap:bwrap unzip)" "bubblewrap "
+check "missing_linux_packages: a command named like the package does not satisfy package:command" \
+    "$(pkg_probe 'bubblewrap' bubblewrap:bwrap)" "bubblewrap "
+check "missing_linux_packages: nothing requested -> nothing missing" \
+    "$(pkg_probe '')" ""
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"

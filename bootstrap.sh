@@ -350,7 +350,8 @@ install_build_tools() {
     # It is NOT preinstalled on Ubuntu 26+ (it was on 24). Ensure it regardless
     # of whether the compiler toolchain is already present, so re-runs and
     # systems that have gcc but not unzip still get it. bubblewrap is a Homebrew
-    # sandbox dependency and is ensured here too.
+    # sandbox dependency and is ensured here too; its command is bwrap, hence
+    # the package:command form.
     #
     # gawk provides awk, which Homebrew's ca-certificates formula uses in its
     # post-install step to locate the system CA bundle and link openssl's
@@ -358,7 +359,7 @@ install_build_tools() {
     # post-install silently fails, leaving a broken cert.pem that makes every
     # TLS-using Homebrew tool (brew update, brew's curl/git, tflint download)
     # fail with "unable to get local issuer certificate". Ensure it up front.
-    ensure_linux_packages unzip bubblewrap gawk
+    ensure_linux_packages unzip bubblewrap:bwrap gawk
 
     if command -v gcc >/dev/null 2>&1; then
         log "Build tools already installed."
@@ -395,14 +396,27 @@ install_build_tools() {
     fi
 }
 
+# Print, one per line, the package names from the arguments whose command is not
+# on PATH. Each argument is either "package" (the command has the same name) or
+# "package:command" for packages that ship a differently named command, e.g.
+# bubblewrap:bwrap. Uses parameter expansion (bash 3.2 safe).
+missing_linux_packages() {
+    local item pkg cmd
+    for item in "$@"; do
+        pkg="${item%%:*}"
+        cmd="${item#*:}"   # equals the whole item when there is no colon
+        command -v "$cmd" >/dev/null 2>&1 || echo "$pkg"
+    done
+}
+
 # Ensure one or more packages are installed on Linux via the distro package
 # manager. Skips any package whose command is already available.
-# Args: package names (assumed to match their provided command name)
+# Args: "package" or "package:command" items (see missing_linux_packages)
 ensure_linux_packages() {
-    local missing=()
-    for pkg in "$@"; do
-        command -v "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
-    done
+    local missing=() pkg
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] && missing+=("$pkg")
+    done < <(missing_linux_packages "$@")
 
     [[ ${#missing[@]} -eq 0 ]] && return
 
