@@ -904,6 +904,24 @@ check "stale add-on: developer profile does not treat its add-on as stale" \
     "$(addon_probe 'DOTFILES_CONFLICT=skip; stage_dotfiles profile-developer linux >/dev/null; apply_dotfiles profile-developer bash linux; echo "status=$STATUS_DOTFILES"' | tail -n1)" \
     "status=applied"
 
+# Dangling symlinks occupy their path: a conflict, not a missing file.
+dangling_probe() {  # $1 conflict mode
+    addon_probe "DOTFILES_CONFLICT=$1
+        stage_dotfiles profile-minimal linux >/dev/null
+        ln -s \"\$HOME/nowhere\" \"\$HOME/.bashrc\"
+        apply_dotfiles profile-minimal bash linux
+        echo \"status=\$STATUS_DOTFILES\"
+        for f in .bashrc .bashrc.bak.TS; do
+            if [[ -L \"\$HOME/\$f\" ]]; then echo \"\$f=link\"; elif [[ -f \"\$HOME/\$f\" ]]; then echo \"\$f=file:\$(cat \"\$HOME/\$f\")\"; else echo \"\$f=absent\"; fi
+        done"
+}
+check "dangling symlink, overwrite mode: the link is moved aside, profile file installed" \
+    "$(dangling_probe overwrite | tr '\n' ' ')" \
+    "status=applied .bashrc=file:base .bashrc.bak.TS=link "
+check "dangling symlink, skip mode: the link is kept and reported as kept" \
+    "$(dangling_probe skip | tr '\n' ' ')" \
+    "status=kept .bashrc=link .bashrc.bak.TS=absent "
+
 # Legacy ~/.bash_environment: noted in the log, never deleted.
 check "legacy .bash_environment: noted, left in place" \
     "$(addon_probe 'log() { echo "LOG: $*"; }; stage_dotfiles profile-minimal linux >/dev/null; echo x > "$HOME/.bash_environment"
