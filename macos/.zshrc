@@ -39,3 +39,12 @@ fi
 if [[ -f "$HOME/.local/bin/env" ]]; then
     . "$HOME/.local/bin/env"
 fi
+
+###############################################################################
+# Developer Add-on
+###############################################################################
+# Oh My Posh, virtualenvwrapper, fzf and the editor are configured in
+# ~/.zshrc.developer, present only for the developer profile. Sourced last.
+if [[ -f "$HOME/.zshrc.developer" ]]; then
+    source "$HOME/.zshrc.developer"
+fi

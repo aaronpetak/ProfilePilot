@@ -51,8 +51,13 @@ check() {
 check "shell_for_os macos"       "$(shell_for_os macos)"                          "zsh"
 check "shell_for_os linux"       "$(shell_for_os linux)"                          "bash"
 check "files for macOS shell"    "$(shell_files_for "$(shell_for_os macos)")"     ".zshrc .zprofile"
-check "files for linux shell"    "$(shell_files_for "$(shell_for_os linux)")"     ".bashrc .bash_environment"
+check "files for linux shell"    "$(shell_files_for "$(shell_for_os linux)")"     ".bashrc"
 check "files for unknown shell"  "$(shell_files_for fish)"                        ""
+check "add-on name bash"         "$(shell_addon_name_for bash)"                   ".bashrc.developer"
+check "add-on name zsh"          "$(shell_addon_name_for zsh)"                    ".zshrc.developer"
+check "developer add-on bash"    "$(shell_addon_for profile-developer bash)"      ".bashrc.developer"
+check "developer add-on zsh"     "$(shell_addon_for profile-developer zsh)"       ".zshrc.developer"
+check "minimal has no add-on"    "$(shell_addon_for profile-minimal bash)"        ""
 
 # ---------------------------------------------------------------------------
 # brewfile_for_profile  (non-interactive PROFILE selection)
@@ -101,8 +106,9 @@ check "summary pkg fail dominates"   "$(summary_rc incomplete kept incomplete)" 
 #   1. no PROMPT_COMMAND assignment may run after the init, and
 #   2. the array must be flattened to a ';'-joined string right after it.
 # ---------------------------------------------------------------------------
-DEV_BASHRC="$SCRIPT_DIR/../linux/profile-developer/.bashrc"
-DEV_BASHENV="$SCRIPT_DIR/../linux/profile-developer/.bash_environment"
+BASE_BASHRC="$SCRIPT_DIR/../linux/.bashrc"
+DEV_ADDON="$SCRIPT_DIR/../linux/profile-developer/.bashrc.developer"
+ADDON_SOURCE_RE='^[[:space:]]*\. ~/\.bashrc\.developer$'
 
 # First line number matching a regex, or empty when absent. Patterns are
 # anchored at the start of the line so the surrounding prose comments (which
@@ -116,24 +122,35 @@ before() {
     if [[ -n "$1" && -n "$2" && "$1" -lt "$2" ]]; then echo "yes"; else echo "no"; fi
 }
 
-check "bashrc sets PROMPT_COMMAND before sourcing .bash_environment" \
-    "$(before "$(line_of "$DEV_BASHRC" "^PROMPT_COMMAND='history -a'$")" \
-              "$(line_of "$DEV_BASHRC" '^[[:space:]]*\. ~/\.bash_environment$')")" "yes"
+check "bashrc sets PROMPT_COMMAND before sourcing the developer add-on" \
+    "$(before "$(line_of "$BASE_BASHRC" "^PROMPT_COMMAND='history -a'$")" \
+              "$(line_of "$BASE_BASHRC" "$ADDON_SOURCE_RE")")" "yes"
+check "bashrc sets the fallback PS1 before sourcing the developer add-on" \
+    "$(before "$(line_of "$BASE_BASHRC" "^PS1='")" \
+              "$(line_of "$BASE_BASHRC" "$ADDON_SOURCE_RE")")" "yes"
 
-# Homebrew is detected in .bashrc (not .bash_environment) so it is on PATH
-# before ~/.shell_aliases is sourced and before oh-my-posh is initialised.
-MIN_BASHRC="$SCRIPT_DIR/../linux/profile-minimal/.bashrc"
-for rc_file in "$DEV_BASHRC" "$MIN_BASHRC"; do
-    rc_name="$(basename "$(dirname "$rc_file")")"
-    check "$rc_name .bashrc detects brew before sourcing .shell_aliases" \
-        "$(before "$(line_of "$rc_file" '^[[:space:]]*eval .*shellenv bash')" \
-                  "$(line_of "$rc_file" '^[[:space:]]*\. ~/\.shell_aliases$')")" "yes"
-done
-check "developer .bashrc detects brew before sourcing .bash_environment" \
-    "$(before "$(line_of "$DEV_BASHRC" '^[[:space:]]*eval .*shellenv bash')" \
-              "$(line_of "$DEV_BASHRC" '^[[:space:]]*\. ~/\.bash_environment$')")" "yes"
-check ".bash_environment no longer hardcodes a Homebrew prefix" \
-    "$(grep -c 'linuxbrew\|/opt/homebrew' "$DEV_BASHENV")" "0"
+# The add-on source must be the last PROMPT_COMMAND/PS1-relevant statement: no
+# PROMPT_COMMAND or PS1 assignment below it, and nothing after it but the
+# closing fi of its guard.
+check "bashrc: no PROMPT_COMMAND or PS1 assignment after the add-on source" \
+    "$(before "$(grep -nE '^[[:space:]]*(PROMPT_COMMAND|PS1)=' "$BASE_BASHRC" | tail -n1 | cut -d: -f1)" \
+              "$(line_of "$BASE_BASHRC" "$ADDON_SOURCE_RE")")" "yes"
+check "bashrc: the add-on source is its last statement" \
+    "$(grep -vE '^[[:space:]]*(#|$)' "$BASE_BASHRC" | tail -n2 | sed -e 's/^[[:space:]]*//' | tr '\n' ' ')" \
+    ". ~/.bashrc.developer fi "
+
+# Homebrew is detected in .bashrc so it is on PATH before ~/.shell_aliases is
+# sourced and before oh-my-posh is initialised (in the add-on).
+check "bashrc detects brew before sourcing .shell_aliases" \
+    "$(before "$(line_of "$BASE_BASHRC" '^[[:space:]]*eval .*shellenv bash')" \
+              "$(line_of "$BASE_BASHRC" '^[[:space:]]*\. ~/\.shell_aliases$')")" "yes"
+check "bashrc detects brew before sourcing the developer add-on" \
+    "$(before "$(line_of "$BASE_BASHRC" '^[[:space:]]*eval .*shellenv bash')" \
+              "$(line_of "$BASE_BASHRC" "$ADDON_SOURCE_RE")")" "yes"
+check "developer add-on does not hardcode a Homebrew prefix" \
+    "$(grep -c 'linuxbrew\|/opt/homebrew' "$DEV_ADDON")" "0"
+check "bashrc no longer sources .bash_environment" \
+    "$(grep -c '^[[:space:]]*\. ~/\.bash_environment' "$BASE_BASHRC")" "0"
 
 # Behavioral: run the .bashrc detection loop with its candidates redirected to a
 # temp dir holding a fake brew, and confirm the first existing one is evaluated.
@@ -144,7 +161,7 @@ brew_loop_result() {
         mkdir -p "$tmp/b"
         printf '#!/bin/sh\necho "export PICKED=%s"\n' "$tmp/b" > "$tmp/b/brew"
         chmod +x "$tmp/b/brew"
-        snippet="$(sed -n '/^for _brew in /,/^unset _brew$/p' "$DEV_BASHRC")"
+        snippet="$(sed -n '/^for _brew in /,/^unset _brew$/p' "$BASE_BASHRC")"
         snippet="${snippet//\/opt\/homebrew\/bin\/brew/$tmp/a/brew}"
         snippet="${snippet//\/usr\/local\/bin\/brew/$tmp/b/brew}"
         snippet="${snippet//\/home\/linuxbrew\/.linuxbrew\/bin\/brew/$tmp/c/brew}"
@@ -158,20 +175,25 @@ check "brew loop evaluates the first brew found and unsets its variable" \
 
 # macOS: zsh files must request zsh-flavoured shellenv and not hardcode a prefix.
 MAC_DIR="$SCRIPT_DIR/../macos"
-for z in minimal developer; do
-    check "macOS $z .zprofile uses shellenv zsh"         "$(grep -c 'shellenv zsh' "$MAC_DIR/profile-$z/.zprofile")" "1"
-    check "macOS $z .zprofile has no stray percent sign"         "$(grep -c '%$' "$MAC_DIR/profile-$z/.zprofile")" "0"
-    check "macOS $z .zshrc does not hardcode /opt/homebrew/share or /bin"         "$(grep -v '^[[:space:]]*#' "$MAC_DIR/profile-$z/.zshrc" | grep -c '/opt/homebrew/\(share\|bin/virtualenv\)')" "0"
-done
+MAC_ADDON="$MAC_DIR/profile-developer/.zshrc.developer"
+check "macOS .zprofile uses shellenv zsh"         "$(grep -c 'shellenv zsh' "$MAC_DIR/.zprofile")" "1"
+check "macOS .zprofile has no stray percent sign"         "$(grep -c '%$' "$MAC_DIR/.zprofile")" "0"
+check "macOS .zshrc does not hardcode /opt/homebrew/share or /bin"         "$(grep -v '^[[:space:]]*#' "$MAC_DIR/.zshrc" | grep -c '/opt/homebrew/\(share\|bin/virtualenv\)')" "0"
+check "macOS add-on does not hardcode /opt/homebrew/share or /bin"         "$(grep -v '^[[:space:]]*#' "$MAC_ADDON" | grep -c '/opt/homebrew/\(share\|bin/virtualenv\)')" "0"
+check "macOS .zshrc sources the add-on last" \
+    "$(grep -vE '^[[:space:]]*(#|$)' "$MAC_DIR/.zshrc" | tail -n3 | tr -s ' \n' ' ')" \
+    'if [[ -f "$HOME/.zshrc.developer" ]]; then source "$HOME/.zshrc.developer" fi '
+check "old profile-minimal directories are gone" \
+    "$(ls -d "$MAC_DIR"/profile-minimal "$SCRIPT_DIR"/../linux/profile-minimal 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 check "PROMPT_COMMAND flatten sits after oh-my-posh init" \
-    "$(before "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*oh-my-posh init bash')" \
-              "$(line_of "$DEV_BASHENV" '^[[:space:]]*if \[\[ .*declare -p PROMPT_COMMAND')")" "yes"
+    "$(before "$(line_of "$DEV_ADDON" '^[[:space:]]*eval .*oh-my-posh init bash')" \
+              "$(line_of "$DEV_ADDON" '^[[:space:]]*if \[\[ .*declare -p PROMPT_COMMAND')")" "yes"
 
 # The last PROMPT_COMMAND assignment in the file must be the flatten's own; any
 # assignment below it would clobber the hook again on bash 4.4.
 check "flatten is the last PROMPT_COMMAND assignment" \
-    "$(grep -E '^[[:space:]]*PROMPT_COMMAND=' "$DEV_BASHENV" | tail -n1 |
+    "$(grep -E '^[[:space:]]*PROMPT_COMMAND=' "$DEV_ADDON" | tail -n1 |
        sed -e 's/^[[:space:]]*//')" \
     'PROMPT_COMMAND="$_omp_prompt_command"'
 
@@ -180,7 +202,7 @@ check "flatten is the last PROMPT_COMMAND assignment" \
 flatten() {
     (
         eval "$1"
-        eval "$(sed -n '/if \[\[ "\$(declare -p PROMPT_COMMAND/,/^    fi$/p' "$DEV_BASHENV")"
+        eval "$(sed -n '/if \[\[ "\$(declare -p PROMPT_COMMAND/,/^    fi$/p' "$DEV_ADDON")"
         declare -p PROMPT_COMMAND
     )
 }
@@ -795,6 +817,71 @@ check "install_tflint_linux: install failure -> mark incomplete" \
     "$(tflint_probe 'install() { return 1; }' | head -n1)" "status=incomplete installed=no"
 check "install_tflint_linux: not touched on macOS" \
     "$(tflint_probe 'OS_TYPE=macos' | head -n1)" "status=ok installed=no"
+
+# ---------------------------------------------------------------------------
+# Base + developer add-on: staging and applying  (temp HOME and source tree)
+# ---------------------------------------------------------------------------
+# Runs a snippet with HOME, SOURCE_DIR and WORKDIR pointing into a temp dir
+# holding a minimal source tree for both OSes.
+addon_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        HOME="$tmp/home"; SOURCE_DIR="$tmp/src"; WORKDIR="$tmp/work"
+        RUN_TS="TS"; OS_TYPE=linux
+        mkdir -p "$HOME" "$WORKDIR" "$SOURCE_DIR/universal" "$SOURCE_DIR/linux/profile-developer" \
+                 "$SOURCE_DIR/macos/profile-developer"
+        echo base > "$SOURCE_DIR/linux/.bashrc"
+        echo addon > "$SOURCE_DIR/linux/profile-developer/.bashrc.developer"
+        echo zbase > "$SOURCE_DIR/macos/.zshrc"; echo zprof > "$SOURCE_DIR/macos/.zprofile"
+        echo zaddon > "$SOURCE_DIR/macos/profile-developer/.zshrc.developer"
+        echo aliases > "$SOURCE_DIR/universal/.shell_aliases"
+        eval "$1"
+    )
+}
+listing() { (cd "$1" && ls -A | tr '\n' ' '); }
+
+check "stage_dotfiles: linux developer stages base + add-on" \
+    "$(addon_probe 'stage_dotfiles profile-developer linux; listing "$WORKDIR/dotfiles-linux-profile-developer"')" \
+    ".bashrc .bashrc.developer .shell_aliases "
+check "stage_dotfiles: linux minimal stages only the base" \
+    "$(addon_probe 'stage_dotfiles profile-minimal linux; listing "$WORKDIR/dotfiles-linux-profile-minimal"')" \
+    ".bashrc .shell_aliases "
+check "stage_dotfiles: macOS developer stages base + add-on" \
+    "$(addon_probe 'OS_TYPE=macos; stage_dotfiles profile-developer macos; listing "$WORKDIR/dotfiles-macos-profile-developer"')" \
+    ".shell_aliases .zprofile .zshrc .zshrc.developer "
+check "apply_dotfiles: developer installs base + add-on" \
+    "$(addon_probe 'stage_dotfiles profile-developer linux; apply_dotfiles profile-developer bash linux; listing "$HOME"')" \
+    ".bashrc .bashrc.developer .shell_aliases "
+
+# Stale add-on when applying minimal.
+stale_probe() {  # $1 conflict mode, $2 add-on name, $3 shell, $4 os
+    addon_probe "DOTFILES_CONFLICT=$1; OS_TYPE=$4
+        stage_dotfiles profile-minimal $4 >/dev/null; echo old > \"\$HOME/$2\"
+        apply_dotfiles profile-minimal $3 $4
+        echo \"status=\$STATUS_DOTFILES\"; listing \"\$HOME\""
+}
+check "stale add-on, overwrite mode: retired to a timestamped backup" \
+    "$(stale_probe overwrite .bashrc.developer bash linux | tr '\n' ' ')" \
+    "status=applied .bashrc .bashrc.developer.bak.TS .shell_aliases "
+check "stale add-on, skip mode: kept and reported as kept" \
+    "$(stale_probe skip .bashrc.developer bash linux | tr '\n' ' ')" \
+    "status=kept .bashrc .bashrc.developer .shell_aliases "
+check "stale zsh add-on, overwrite mode: retired" \
+    "$(stale_probe overwrite .zshrc.developer zsh macos | tr '\n' ' ')" \
+    "status=applied .shell_aliases .zprofile .zshrc .zshrc.developer.bak.TS "
+check "stale add-on: developer profile does not treat its add-on as stale" \
+    "$(addon_probe 'DOTFILES_CONFLICT=skip; stage_dotfiles profile-developer linux >/dev/null; apply_dotfiles profile-developer bash linux; echo "status=$STATUS_DOTFILES"' | tail -n1)" \
+    "status=applied"
+
+# Legacy ~/.bash_environment: noted in the log, never deleted.
+check "legacy .bash_environment: noted, left in place" \
+    "$(addon_probe 'log() { echo "LOG: $*"; }; stage_dotfiles profile-minimal linux >/dev/null; echo x > "$HOME/.bash_environment"
+        apply_dotfiles profile-minimal bash linux | grep -c "bash_environment is no longer sourced"; test -f "$HOME/.bash_environment" && echo kept' | tr '\n' ' ')" \
+    "1 kept "
+check "no legacy note when .bash_environment is absent" \
+    "$(addon_probe 'log() { echo "LOG: $*"; }; stage_dotfiles profile-minimal linux >/dev/null
+        apply_dotfiles profile-minimal bash linux | grep -c "bash_environment"')" "0"
 
 # ---------------------------------------------------------------------------
 # Summary
