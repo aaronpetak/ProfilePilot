@@ -1,8 +1,18 @@
 # ~/.bashrc: executed by bash(1) for non-login shells.
 #
 # Minimal profile, shared across all Linux distros. Unlike the developer
-# profile, minimal ships no .bash_environment, so Homebrew is wired up inline
-# below. Distro-specific blocks are guarded and no-op where inapplicable.
+# profile, minimal ships no .bash_environment. Distro-specific blocks are
+# guarded and no-op where inapplicable.
+
+# Homebrew: put the first Homebrew install found on PATH. Done first, before
+# ~/.shell_aliases is sourced, so its command -v guards can see Homebrew tools.
+for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+    if [ -x "$_brew" ]; then
+        eval "$("$_brew" shellenv bash)"
+        break
+    fi
+done
+unset _brew
 
 # colors
 RED=$(tput setaf 1)
@@ -105,9 +115,6 @@ if ! shopt -oq posix; then
     . /etc/bash_completion
   fi
 fi
-
-# Homebrew (minimal profile has no .bash_environment, so wire it up here)
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
 
 # Source .bash_environment for environment variables, if one is present.
 # Minimal doesn't ship one, but the guarded source keeps parity with the

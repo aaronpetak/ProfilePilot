@@ -1,6 +1,3 @@
-# Homebrew
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
-
 # Projects
 export PROJECTS_HOME=$HOME/projects
 
@@ -14,8 +11,8 @@ export WORKON_HOME=$HOME/.virtualenvs
 
 # Guard the source so a shell doesn't error out if virtualenvwrapper isn't
 # installed (e.g. a partial bootstrap or the minimal profile).
-if [ -f /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh ]; then
-    source /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh
+if [ -n "${HOMEBREW_PREFIX:-}" ] && [ -f "$HOMEBREW_PREFIX/bin/virtualenvwrapper.sh" ]; then
+    source "$HOMEBREW_PREFIX/bin/virtualenvwrapper.sh"
 fi
 
 # Poetry
@@ -38,8 +35,8 @@ export PATH=$PATH:$GOBIN
 # replaces only element [0] -- so a later `PROMPT_COMMAND='history -a'` would
 # silently drop the hook and no prompt would ever be drawn. Keep every other
 # PROMPT_COMMAND assignment (see .bashrc) above this point.
-if [ -f /home/linuxbrew/.linuxbrew/bin/oh-my-posh ] && [ "$TERM_PROGRAM" != "vscode" ]; then
-    eval "$(/home/linuxbrew/.linuxbrew/bin/oh-my-posh init bash --config ~/.poshthemes/meridian-2.omp.json)"
+if command -v oh-my-posh >/dev/null 2>&1 && [ "$TERM_PROGRAM" != "vscode" ]; then
+    eval "$(oh-my-posh init bash --config ~/.poshthemes/meridian-2.omp.json)"
 
     # Array-form PROMPT_COMMAND is only honored from bash 5.1 on. Bash 4.4 (the
     # stock shell on RHEL/Rocky/Alma 8) runs element [0] and ignores the rest,

@@ -115,9 +115,49 @@ check "bashrc sets PROMPT_COMMAND before sourcing .bash_environment" \
     "$(before "$(line_of "$DEV_BASHRC" "^PROMPT_COMMAND='history -a'$")" \
               "$(line_of "$DEV_BASHRC" '^[[:space:]]*\. ~/\.bash_environment$')")" "yes"
 
-check "brew shellenv runs before oh-my-posh init" \
-    "$(before "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*brew shellenv')" \
-              "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*oh-my-posh init bash')")" "yes"
+# Homebrew is detected in .bashrc (not .bash_environment) so it is on PATH
+# before ~/.shell_aliases is sourced and before oh-my-posh is initialised.
+MIN_BASHRC="$SCRIPT_DIR/../linux/profile-minimal/.bashrc"
+for rc_file in "$DEV_BASHRC" "$MIN_BASHRC"; do
+    rc_name="$(basename "$(dirname "$rc_file")")"
+    check "$rc_name .bashrc detects brew before sourcing .shell_aliases" \
+        "$(before "$(line_of "$rc_file" '^[[:space:]]*eval .*shellenv bash')" \
+                  "$(line_of "$rc_file" '^[[:space:]]*\. ~/\.shell_aliases$')")" "yes"
+done
+check "developer .bashrc detects brew before sourcing .bash_environment" \
+    "$(before "$(line_of "$DEV_BASHRC" '^[[:space:]]*eval .*shellenv bash')" \
+              "$(line_of "$DEV_BASHRC" '^[[:space:]]*\. ~/\.bash_environment$')")" "yes"
+check ".bash_environment no longer hardcodes a Homebrew prefix" \
+    "$(grep -c 'linuxbrew\|/opt/homebrew' "$DEV_BASHENV")" "0"
+
+# Behavioral: run the .bashrc detection loop with its candidates redirected to a
+# temp dir holding a fake brew, and confirm the first existing one is evaluated.
+brew_loop_result() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        mkdir -p "$tmp/b"
+        printf '#!/bin/sh\necho "export PICKED=%s"\n' "$tmp/b" > "$tmp/b/brew"
+        chmod +x "$tmp/b/brew"
+        snippet="$(sed -n '/^for _brew in /,/^unset _brew$/p' "$DEV_BASHRC")"
+        snippet="${snippet//\/opt\/homebrew\/bin\/brew/$tmp/a/brew}"
+        snippet="${snippet//\/usr\/local\/bin\/brew/$tmp/b/brew}"
+        snippet="${snippet//\/home\/linuxbrew\/.linuxbrew\/bin\/brew/$tmp/c/brew}"
+        HOME="$tmp/home"
+        eval "$snippet"
+        echo "${PICKED:-none} ${_brew:-unset}" | sed "s#$tmp#TMP#"
+    )
+}
+check "brew loop evaluates the first brew found and unsets its variable" \
+    "$(brew_loop_result)" "TMP/b unset"
+
+# macOS: zsh files must request zsh-flavoured shellenv and not hardcode a prefix.
+MAC_DIR="$SCRIPT_DIR/../macos"
+for z in minimal developer; do
+    check "macOS $z .zprofile uses shellenv zsh"         "$(grep -c 'shellenv zsh' "$MAC_DIR/profile-$z/.zprofile")" "1"
+    check "macOS $z .zprofile has no stray percent sign"         "$(grep -c '%$' "$MAC_DIR/profile-$z/.zprofile")" "0"
+    check "macOS $z .zshrc does not hardcode /opt/homebrew/share or /bin"         "$(grep -v '^[[:space:]]*#' "$MAC_DIR/profile-$z/.zshrc" | grep -c '/opt/homebrew/\(share\|bin/virtualenv\)')" "0"
+done
 
 check "PROMPT_COMMAND flatten sits after oh-my-posh init" \
     "$(before "$(line_of "$DEV_BASHENV" '^[[:space:]]*eval .*oh-my-posh init bash')" \
