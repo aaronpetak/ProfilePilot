@@ -504,6 +504,10 @@ check "missing_linux_packages: package:command reports the package name" \
     "$(pkg_probe 'unzip' bubblewrap:bwrap unzip)" "bubblewrap "
 check "missing_linux_packages: a command named like the package does not satisfy package:command" \
     "$(pkg_probe 'bubblewrap' bubblewrap:bwrap)" "bubblewrap "
+check "missing_linux_packages: gawk:awk is satisfied by an awk without gawk" \
+    "$(pkg_probe 'awk' gawk:awk)" ""
+check "missing_linux_packages: gawk:awk reports gawk when neither exists" \
+    "$(pkg_probe 'unzip' gawk:awk)" "gawk "
 check "missing_linux_packages: nothing requested -> nothing missing" \
     "$(pkg_probe '')" ""
 

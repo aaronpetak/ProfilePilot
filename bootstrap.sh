@@ -460,13 +460,15 @@ install_build_tools() {
     # sandbox dependency and is ensured here too; its command is bwrap, hence
     # the package:command form.
     #
-    # gawk provides awk, which Homebrew's ca-certificates formula uses in its
-    # post-install step to locate the system CA bundle and link openssl's
+    # An awk (any implementation; the package is gawk, but the command checked
+    # is awk, since busybox-gawk on openSUSE provides awk and conflicts with
+    # gawk) is used by Homebrew's ca-certificates formula in its post-install
+    # step to locate the system CA bundle and link openssl's
     # cert.pem. Minimal Fedora images ship without awk; when it is absent that
     # post-install silently fails, leaving a broken cert.pem that makes every
     # TLS-using Homebrew tool (brew update, brew's curl/git, tflint download)
     # fail with "unable to get local issuer certificate". Ensure it up front.
-    ensure_linux_packages unzip bubblewrap:bwrap gawk
+    ensure_linux_packages unzip bubblewrap:bwrap gawk:awk
 
     if command -v gcc >/dev/null 2>&1; then
         log "Build tools already installed."
