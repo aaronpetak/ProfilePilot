@@ -627,10 +627,8 @@ install_brewfile_packages() {
 
     while (( attempt <= attempts )); do
         log "Installing packages from $(basename "$brewfile") (attempt $attempt/$attempts)..."
-        # Third-party tap trust (Homebrew 6.0.0+): the Brewfile marks its taps
-        # trusted, but we also set HOMEBREW_NO_REQUIRE_TAP_TRUST as a guaranteed
-        # fallback so the untrusted-tap gate can never block the install. The
-        # taps involved (oh-my-posh, sinelaw/fresh) are known and intentional.
+        # Third-party tap trust (Homebrew 6.0.0+) is declared per tap in the
+        # Brewfile (trusted: true), so the tap-trust check stays enabled.
         #
         # HOMEBREW_DOWNLOAD_CONCURRENCY=1 forces serial downloads (default is
         # auto = 2x CPU cores). Parallel downloads draw multiple live progress
@@ -641,8 +639,7 @@ install_brewfile_packages() {
         # trades a little download speed for readable output and far fewer
         # transient failures. HOMEBREW_NO_EMOJI drops the success badge that is
         # part of the same spinner drawing.
-        if HOMEBREW_NO_REQUIRE_TAP_TRUST=1 \
-            HOMEBREW_DOWNLOAD_CONCURRENCY=1 \
+        if HOMEBREW_DOWNLOAD_CONCURRENCY=1 \
             HOMEBREW_NO_EMOJI=1 \
             brew bundle --file="$brewfile" 2>&1; then
             # brew bundle's progress spinners can leave the terminal mangled
