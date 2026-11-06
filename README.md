@@ -1,289 +1,243 @@
 # ProfilePilot
 
-Self-contained provisioning repository: a `bootstrap.sh` script plus the Homebrew package definitions (Brewfiles) and shell configurations (dotfiles) it downloads and applies when setting up a fresh macOS or Linux machine.
-
-The bootstrap script lives in this repository as [`bootstrap.sh`](bootstrap.sh) and is fetched directly from this repo — there is no external gist or separate script to install.
+Provisioning for a fresh macOS or Linux machine: a `bootstrap.sh` script plus the Homebrew package lists (Brewfiles) and shell configuration (dotfiles) it installs. It installs Homebrew if needed, installs a profile's packages, applies the profile's dotfiles, and writes your git identity.
 
 ## Quick Start
 
-To bootstrap a fresh machine, run the one-liner:
-
 ```bash
-curl -fsSL -o /tmp/profile-pilot.sh https://raw.githubusercontent.com/aaronpetak/ProfilePilot/main/bootstrap.sh && bash /tmp/profile-pilot.sh
+f="$(mktemp)" && curl -fsSL https://raw.githubusercontent.com/aaronpetak/ProfilePilot/main/bootstrap.sh -o "$f" && bash "$f"
 ```
 
-The script will detect your OS (macOS or Linux), prompt you to select a profile, and configure your system using files from this repository.
+The script detects your OS, asks you to pick a profile (Developer or Minimal), and sets up the machine. It must run as a normal user with `sudo` access: Homebrew refuses to install as root, and the Linux distro-package steps use `sudo`.
 
-## Overview
+Piping the script (`curl -fsSL .../bootstrap.sh | bash`) also works. A piped script has no file next to it, so it takes the tarball path described below, and prompts still reach you through `/dev/tty`.
 
-This repository is organized by:
+To run unattended, preselect everything with environment variables:
 
-- **Operating System** (macOS, or Linux — one shared set for all distros)
-- **Profile** (Developer and Minimal; Bastion is planned)
+```bash
+PROFILE=minimal DOTFILES_CONFLICT=overwrite CLEANUP=skip \
+GIT_NAME="Your Name" GIT_EMAIL="you@example.com" \
+bash bootstrap.sh
+```
 
-Each profile includes:
+Supported platforms: macOS, and glibc-based Linux using `apt-get`, `dnf`, `pacman` or `zypper` (Debian/Ubuntu, Fedora/RHEL family, Arch, openSUSE). musl distros such as Alpine are not supported because Homebrew on Linux needs glibc.
 
-- A **Brewfile** with curated package lists
-- **Dotfiles** with shell and tool configurations specific to that profile
+## Where the Files Come From
+
+`bootstrap.sh` resolves its source in one of two ways:
+
+- **Local checkout.** If the script file sits in a ProfilePilot clone (its directory contains `universal/brewfiles`), it installs from that clone. This is what `bash bootstrap.sh` does inside a checkout, and it is how you test local changes.
+- **One tarball.** Otherwise (piped, or copied somewhere by itself) it downloads a single tarball of `$DOTFILES_REF` from `$DOTFILES_REPO_SLUG` (`https://codeload.github.com/<slug>/tar.gz/<ref>`) and unpacks it into a private temporary directory. Every file comes from the same snapshot. The archive is checked for `universal/brewfiles/Brewfile-minimal` and the run stops if it is missing.
+
+`DOTFILES_REPO_SLUG` (default `aaronpetak/ProfilePilot`) selects a fork, and `DOTFILES_REF` (default `main`) accepts a branch, tag or commit SHA:
+
+```bash
+# A fork, pinned to a tag
+DOTFILES_REPO_SLUG=your-user/ProfilePilot DOTFILES_REF=v1.2.0 bash "$f"
+```
+
+Both variables only matter in tarball mode; a local checkout ignores them.
+
+## Environment Variables
+
+| Variable | Values / default | Effect |
+| --- | --- | --- |
+| `PROFILE` | `developer`, `minimal` | Selects the profile without the menu. Unset: menu on a terminal; with no terminal the run stops with an error. |
+| `DOTFILES_CONFLICT` | `overwrite`, `skip`, `prompt` | How to treat an existing dotfile that differs from the profile's. Unset: prompt on a terminal, otherwise `skip`. |
+| `CLEANUP` | `remove`, `skip`, `prompt` | What to do with installed Homebrew packages that are not in the Brewfile. Unset: prompt on a terminal, otherwise `skip`. |
+| `SKIP_CLEANUP` | any non-empty value | Same as `CLEANUP=skip` (used only when `CLEANUP` is unset). |
+| `GIT_NAME` | text | Git `user.name`, written to `~/.gitconfig.local`. Unset: prompted when a terminal is available. |
+| `GIT_EMAIL` | text | Git `user.email`, written to `~/.gitconfig.local`. Unset: prompted when a terminal is available. |
+| `DOTFILES_REPO_SLUG` | `owner/repo`, default `aaronpetak/ProfilePilot` | Repository the tarball is fetched from (tarball mode only). |
+| `DOTFILES_REF` | branch, tag or SHA, default `main` | Ref of that repository to fetch (tarball mode only). |
+| `BREW_BUNDLE_ATTEMPTS` | number, default `3` | How many times `brew bundle` is tried. |
+| `BREW_BUNDLE_RETRY_DELAY` | seconds, default `5` | Pause between `brew bundle` attempts. |
 
 ## Directory Structure
 
 ```text
 ProfilePilot/
-├── bootstrap.sh              # Provisioning script (run this)
+├── bootstrap.sh                      # Provisioning script (run this)
+├── linux/
+│   ├── .bashrc                       # Base bash config for every profile and distro
+│   └── profile-developer/
+│       └── .bashrc.developer         # Developer add-on, sourced last by .bashrc
 ├── macos/
-│   ├── profile-developer/    # macOS Zsh configs for full dev environment
-│   │   ├── .zprofile
-│   │   └── .zshrc
-│   └── profile-minimal/      # macOS Zsh configs for minimal setup
-│       ├── .zprofile
-│       └── .zshrc
-├── linux/                    # Shared across all glibc Linux distros (apt/dnf/pacman/zypper families)
-│   ├── profile-developer/    # Bash configs for full dev environment
-│   │   ├── .bashrc
-│   │   └── .bash_environment
-│   └── profile-minimal/      # Bash configs for minimal setup
-│       └── .bashrc
+│   ├── .zprofile                     # Homebrew shellenv for login shells
+│   ├── .zshrc                        # Base zsh config for every profile
+│   └── profile-developer/
+│       └── .zshrc.developer          # Developer add-on, sourced last by .zshrc
 ├── universal/
-│   ├── brewfiles/            # Package definitions (all OS-compatible)
-│   │   ├── Brewfile-bastion
-│   │   ├── Brewfile-developer
-│   │   └── Brewfile-minimal
-│   ├── .shell_aliases        # Shared aliases/functions, sourced by bash AND zsh
-│   ├── .gitconfig            # Git configuration
-│   ├── .gitmessage           # Git commit message template
-│   └── .poshthemes/          # Oh My Posh prompt themes
-│       └── meridian-2.omp.json
-└── README.md
+│   ├── .shell_aliases                # Aliases and functions, sourced by bash AND zsh
+│   ├── .gitconfig                    # Shared git configuration
+│   ├── .gitmessage                   # Commit message template
+│   ├── .poshthemes/                  # Oh My Posh themes (developer only)
+│   │   └── meridian-2.omp.json
+│   └── brewfiles/
+│       ├── Brewfile-developer
+│       └── Brewfile-minimal
+├── test/
+│   ├── logic_tests.sh                # Unit tests for bootstrap.sh and the dotfiles
+│   └── ci/                           # Scripts used by the CI smoke jobs
+└── .github/workflows/ci.yml
 ```
+
+The shell is chosen by the OS, not by `$SHELL`: macOS gets the zsh files, Linux gets the bash files.
 
 ## Profiles
 
 ### Developer
 
-Complete engineering workstation environment including:
+Installs `Brewfile-developer` and the developer add-on for your shell. The Brewfile covers these categories:
 
-- DevOps and cloud tools (AWS, Kubernetes, Terraform, etc.)
-- Programming language toolchains (Python, Node.js, Go, Rust, etc.)
-- Security and networking utilities
-- Development utilities and linters
-- Git configuration with commit message templates
-- PowerShell theme for enhanced terminal appearance
+- Core CLI tools: `bat`, `direnv`, `fzf`, `git`, `gh`, `htop`, `jq`, `ripgrep`, `tmux`, `tree`, `tlrc` (the `tldr` command), `age`, `gnupg`, `ipcalc`, the `fresh` editor
+- Programming language: Go
+- Networking: `iperf3`, `mtr`, `nmap`, `speedtest-cli`
+- Cloud and Kubernetes: `kubectl`, `kubectx`, `stern`, `awscli`, `aws-sso-cli`, `step`, `grpcurl`
+- IaC and security: `terraform-docs`, `tfenv`, `tflint`, `checkov`, `trivy`, `semgrep`
+- Config and formatting: `yq`, `yamllint`, `jsonlint`
+- Python tooling: `pyenv`, `virtualenv`, `virtualenvwrapper`
+- Containers and Ansible: `hadolint`, `ansible`, `ansible-lint`
+- Misc: `just`, `pre-commit`, Oh My Posh (the prompt theme engine)
+- Casks: `1password-cli` (macOS and Linux); `meetingbar` and `monitorcontrol` are macOS-only and guarded with `if OS.mac?`
 
-**Files:**
-
-- `universal/brewfiles/Brewfile-developer`
-- `macos/profile-developer/` (Zsh configuration)
-- `linux/profile-developer/` (Bash configuration, all distros)
-- `universal/.shell_aliases`, `.gitconfig`, `.gitmessage`, `.poshthemes/`
+The profile also installs `~/.poshthemes/`. The add-on is `~/.bashrc.developer` on Linux (projects directory, virtualenvwrapper, Go environment, the Oh My Posh prompt with the theme from `~/.poshthemes/`, and a `BROWSER` setting under WSL) or `~/.zshrc.developer` on macOS (Oh My Posh, virtualenvwrapper, `fzf` integration).
 
 ### Minimal
 
-Lightweight, essential-only setup for security-constrained or resource-limited systems:
+Installs `Brewfile-minimal` (`git`, `jq`, `yq`, `ripgrep`, `tmux`, `age`, `gnupg`) and the base shell config only: no add-on and no prompt theme.
 
-- Essential utilities: `git`, `jq`, `yq`, `ripgrep`, `tmux`, `age`, `gnupg`
-- Lean shell configurations
-- No prompt theme (`.poshthemes/` is developer-only)
-
-**Files:**
-
-- `universal/brewfiles/Brewfile-minimal`
-- `macos/profile-minimal/` (Zsh configuration)
-- `linux/profile-minimal/` (Bash configuration, all distros)
-- `universal/.shell_aliases`, `.gitconfig`, `.gitmessage`
-
-### Bastion (planned — not in current version)
-
-A future profile for hardened/security-focused systems. A `Brewfile-bastion` package list exists, but Bastion is **not yet wired into the bootstrap script** (the profile menu currently offers only Developer and Minimal) and has no dotfiles. Selecting it is not possible until a future release adds it to the menu and creates its shell configurations.
-
-**Files (partial):**
-
-- `universal/brewfiles/Brewfile-bastion`
+Both profiles also get `~/.shell_aliases`, `~/.gitconfig` and `~/.gitmessage`.
 
 ## How It Works
 
-The bootstrap script (`bootstrap.sh`) performs these steps:
+1. **OS detection.** macOS or glibc Linux; anything else stops the run. Running as root is refused.
+2. **Profile selection.** `PROFILE`, or the menu.
+3. **Source resolution.** Local checkout or one tarball (see above).
+4. **Homebrew.** If `brew` is not on `PATH`, the known prefixes are checked first, so an existing install is wired up instead of reinstalled. Otherwise the official installer is downloaded to a file and run; a failed download stops the run. On Linux it makes sure `git`, `curl`, `tar` and `gzip` exist before running the installer, and afterwards installs `unzip`, `bubblewrap`, `gawk` and a compiler toolchain through the distro package manager (on Arch this is a full `pacman -Syu`; on apt systems `apt-get update` runs once before the first install).
+5. **Packages.** `brew update` (a failure is only a warning), then `brew bundle` on the profile's Brewfile with retries. Packages that still fail are reported and the run continues, but the exit status is non-zero.
+6. **Dotfiles.** Applied to `$HOME` as described below.
+7. **Git identity.** Written to `~/.gitconfig.local`.
+8. **Cleanup.** Offers to remove installed packages that are not in the Brewfile.
+9. **Summary.** Reports packages, dotfiles and git identity separately.
 
-1. **OS Detection** - Determines if running on macOS or Linux
-2. **Profile Selection** - Prompts you to choose Developer or Minimal (or preselect non-interactively with `PROFILE=developer`/`PROFILE=minimal`)
-3. **Homebrew Installation** - Installs Homebrew if not present (on Linux it also ensures the build tools Homebrew needs)
-4. **Package Installation** - Downloads the selected Brewfile from `universal/brewfiles/` and installs it, retrying transient failures (see [Package Installation & Retries](#package-installation--retries))
-5. **Dotfiles Application** - Downloads and applies OS and profile-specific dotfiles (see [Existing Dotfiles & Backups](#existing-dotfiles--backups) for how conflicts with files you already have are handled)
-6. **Git Personalization** - Fills in your name, email, and GitHub username in the installed `~/.gitconfig` (see [Git Identity](#git-identity))
-7. **Cleanup (Optional)** - Asks before removing installed packages not in the selected profile (see [Package Cleanup](#package-cleanup))
+### Homebrew prefix detection
 
-### Dotfile Source Repository
+Nothing hardcodes where Homebrew lives. The prefixes are tried in this order and the first with an executable `bin/brew` is used: `/opt/homebrew` (Apple Silicon), `/usr/local` (Intel macOS), `/home/linuxbrew/.linuxbrew` (Linux default), `~/.linuxbrew` (per-user Linux). The dotfiles do the same at shell start with `brew shellenv` for the first brew found: `macos/.zprofile` (and `.zshrc`, for non-login shells that have no `HOMEBREW_PREFIX` yet) check the two macOS prefixes and use `shellenv zsh`; `linux/.bashrc` checks all four and uses `shellenv bash`. On Linux the lookup is at the top of `.bashrc`, before `.shell_aliases` is sourced, so the `command -v` guards there can see Homebrew tools.
 
-`bootstrap.sh` downloads Brewfiles and dotfiles over the network at runtime rather than reading them from a local clone, so it works the same whether you cloned the repo or piped the script straight from `curl`.
+`bootstrap.sh` also writes `eval "$(<prefix>/bin/brew shellenv bash)"` to `~/.profile` (and `~/.bash_profile` when it exists, because a bash login shell reads that file instead of `~/.profile`) on Linux, once per line. On macOS it makes sure `~/.zprofile` has a `shellenv` line and appends one only if yours has none.
 
-By default it pulls from `aaronpetak/ProfilePilot`. Point it at a fork with the `DOTFILES_REPO_SLUG` environment variable:
+### Package installation and retries
 
-```bash
-# Bootstrap using a fork's dotfiles and Brewfiles
-DOTFILES_REPO_SLUG=your-user/ProfilePilot bash bootstrap.sh
+`brew bundle` runs with serial downloads (`HOMEBREW_DOWNLOAD_CONCURRENCY=1`), which avoids interleaved progress output and cache races. Failures are retried `BREW_BUNDLE_ATTEMPTS` times. If a formula is installed but cannot be linked because another file (for example a global npm package) owns its path, the script links it automatically when that is safe, or on a terminal offers `brew link --overwrite <formula>`. It never uninstalls the npm copy; it only prints the `npm rm -g` command.
+
+Third-party taps are trusted per tap in the Brewfile (`trusted: true`); the tap-trust check stays enabled.
+
+### tflint on Linux
+
+`tflint` is only a Homebrew cask on macOS, so on Linux the developer profile installs it from the GitHub release. The latest release tag is resolved once, then that tag's `tflint_linux_<arch>.zip` and `checksums.txt` are downloaded and the zip is verified with `sha256sum -c` before the binary is installed into the Homebrew `bin` directory (amd64 and arm64). The check guards against a corrupted download or a tampered mirror. The checksums are published next to the artifact, so it does not protect against a compromised upstream release. If the download or the check fails, tflint is skipped, the package step is marked incomplete and the exit status is non-zero.
+
+### Existing dotfiles and backups
+
+For each dotfile the script compares your version with the profile's:
+
+- Missing: installed.
+- Identical: left alone, no backup.
+- Different (including a dangling symlink): a conflict, resolved by mode.
+
+On a terminal you are asked once: `[O]` overwrite all, `[S]` skip all, or `[D]` decide per file (overwrite, skip, or view a diff). Without a terminal, `DOTFILES_CONFLICT` decides, and unset means skip, so an unattended run never replaces your files. Overwriting moves the original to `<name>.bak.<timestamp>` in place; the timestamp is per run, so a re-run never overwrites an earlier backup.
+
+### Package cleanup
+
+After installing, the script lists packages that are installed but not in the selected Brewfile and asks whether to remove them (`[R]`) or keep them (`[K]`). Removal is done by `brew bundle cleanup`, so packages still required by something in the Brewfile stay. It cannot be undone. Without a terminal, `CLEANUP` decides, and unset means keep.
+
+### Git identity
+
+The shipped `~/.gitconfig` has no `[user]` section. It starts with
+
+```ini
+[include]
+    path = ~/.gitconfig.local
 ```
 
-The variable takes an `owner/repo` slug and always reads from that repository's `main` branch.
+and `bootstrap.sh` writes `user.name` and `user.email` into `~/.gitconfig.local` with `git config --file` (so special characters need no escaping, and a name or email containing a newline is rejected). That file is never shipped, so re-applying the profile cannot overwrite your identity. Values come from `GIT_NAME` and `GIT_EMAIL`, an identity already in `~/.gitconfig.local`, or a prompt on a terminal. With no terminal and no values, nothing is written and the script prints how to set them. After writing, it checks that `git config --global --includes user.email` returns the value; if your own `~/.gitconfig` lacks the include it says so and marks the identity step incomplete.
 
-### Package Installation & Retries
+The include must stay at the top: git applies later entries last, so the per-directory identities below override it only if they come after. `~/projects/gh/` and `~/projects/ghe/` each load their own `.gitconfig` through `includeIf "gitdir:..."`, so a repository under those directories can use a different identity.
 
-Packages are installed with `brew bundle` against the selected Brewfile. Because transient failures (broken pipes mid-download, Cellar lock contention) are common on a fresh machine, the install is retried. If some packages still fail after all attempts, the script reports them and **continues** with the remaining steps (dotfiles, git personalization, cleanup) rather than aborting the whole run — the end-of-run summary flags the incomplete install.
+### Editor
 
-Two environment variables tune the retry loop:
+Each base rc (`.bashrc`, `.zshrc`) sets `EDITOR` only when it is not already set: `code --wait` if `code` is on `PATH` and the session is not over SSH (`SSH_CONNECTION` and `SSH_TTY` unset), otherwise `vim` if present, otherwise `vi`. `VISUAL` defaults to `EDITOR`. `.gitconfig` does not set `core.editor`, so git follows `EDITOR`.
 
-```bash
-# Number of brew bundle attempts (default 3)
-BREW_BUNDLE_ATTEMPTS=5 bash bootstrap.sh
+### Shell config model: base rc plus developer add-on
 
-# Seconds to wait between attempts (default 5)
-BREW_BUNDLE_RETRY_DELAY=10 bash bootstrap.sh
-```
+Each OS has one base rc shared by every profile. The developer profile additionally installs an add-on (`~/.bashrc.developer` or `~/.zshrc.developer`) that the base rc sources if it exists. Aliases and helper functions live once in `~/.shell_aliases`, which both shells source; tool-specific entries are guarded so they do nothing when the tool is absent.
 
-### Existing Dotfiles & Backups
+**`PROMPT_COMMAND` invariant (bash).** The base `.bashrc` sets `PROMPT_COMMAND` and a fallback `PS1`, then sources the add-on as its last statement. `oh-my-posh init bash` stores its hook in a `PROMPT_COMMAND` array, so nothing after it may assign `PROMPT_COMMAND` or `PS1`: a later string assignment replaces only element `[0]` and drops the hook. The add-on flattens the array into one string because bash older than 5.1 (RHEL-family 8 ships 4.4) only runs element `[0]`. `test/logic_tests.sh` checks the ordering.
 
-On a fresh machine the profile's dotfiles are simply installed. On a machine you've already customized, the script does **not** blindly overwrite what you have. For each dotfile it compares your version against the profile version and acts as follows:
+### Log file
 
-- **File doesn't exist yet** → installed silently.
-- **File is identical** to the profile version → left untouched, no backup made.
-- **File exists but differs** → treated as a *conflict* and resolved according to the mode below.
+Output is also appended to `~/.local/state/profilepilot.log` on Linux and `~/Library/Logs/profilepilot.log` on macOS.
 
-When conflicts are found, the script lists them and (on an interactive terminal) asks once how to proceed:
+### Idempotency
 
-- **`[O]` Overwrite all** — install the profile versions; your originals are backed up first.
-- **`[S]` Skip all** — keep your existing files; install none of the conflicting ones.
-- **`[D]` Decide per file** — for each conflict, choose overwrite / skip / view a diff of your version vs. the profile version.
+Re-running is safe. Identical dotfiles are left alone, shell startup lines are appended only once, identities already in `~/.gitconfig.local` are kept, and backups get a per-run timestamp. A re-run is not a no-op: it runs `brew update` and `brew bundle` again, and with `DOTFILES_CONFLICT=overwrite` any file that differs from the profile is replaced again (after a new backup).
 
-Backups are written **in place** with a per-run timestamp, e.g. `~/.zshrc.bak.20260728-145900`. Because the timestamp is unique per run, re-running the script never overwrites an earlier backup.
+## Migrating an Existing Install
 
-You can control this non-interactively with the `DOTFILES_CONFLICT` environment variable:
+- **`~/.bash_environment` is no longer sourced.** Its settings now live in `~/.bashrc.developer`. The script notes this and leaves your file in place.
+- **Old `~/.gitconfig` with placeholders.** A real `user.name` or `user.email` in your current `~/.gitconfig` is copied to `~/.gitconfig.local` before the profile is applied (placeholder values like `{FULL NAME}` are not). If you keep your own `~/.gitconfig` and it lacks the `[include]` for `~/.gitconfig.local`, the script tells you to add it.
+- **Stale developer add-on on a minimal run.** If `~/.bashrc.developer` or `~/.zshrc.developer` exists from an earlier developer run and you now choose Minimal, it is treated like a conflict: `overwrite` moves it to a timestamped backup, `skip` keeps it (and the run is reported as kept), and per-file mode asks.
+- **Stale `shellenv` lines.** A `~/.profile` or `~/.bash_profile` line that runs `shellenv` for a `brew` that does not exist is reported, not edited. Remove or fix it yourself.
+- **`includeIf` directory.** Per-directory git identities now apply under `~/projects/gh/` (previously `~/projects/github/`).
+- **Log name.** The log is `profilepilot.log` (previously `homebrew-restore.log`).
 
-```bash
-# Replace differing dotfiles (originals are still backed up)
-DOTFILES_CONFLICT=overwrite bash bootstrap.sh
+## Testing and CI
 
-# Never touch existing dotfiles (only install ones you don't have)
-DOTFILES_CONFLICT=skip bash bootstrap.sh
-
-# Force the interactive prompt
-DOTFILES_CONFLICT=prompt bash bootstrap.sh
-```
-
-If no terminal is available (e.g. CI or a container) and `DOTFILES_CONFLICT` is unset, the script defaults to **skip** — it will never silently replace an existing file unattended. Set `DOTFILES_CONFLICT=overwrite` in automation that should always apply the latest dotfiles.
-
-### Package Cleanup
-
-After installing the profile's packages, the script checks for Homebrew packages that are installed but **not** listed in the selected Brewfile — for example, tools you installed yourself with `brew install`. It does **not** remove them automatically. On an interactive terminal it lists them and asks once:
-
-- **`[R]` Remove them** — uninstall the listed packages. Removal is delegated to `brew bundle cleanup`, so a package still required by something in your profile is never removed. This cannot be undone (Homebrew keeps no backup).
-- **`[K]` Keep them** — leave every installed package in place.
-
-Control it non-interactively with the `CLEANUP` environment variable:
+Run the unit tests locally; they need no network, Homebrew or terminal, and use temporary directories as `HOME`:
 
 ```bash
-# Uninstall packages not in the profile
-CLEANUP=remove bash bootstrap.sh
-
-# Keep everything (never remove)
-CLEANUP=skip bash bootstrap.sh
-
-# Force the interactive prompt
-CLEANUP=prompt bash bootstrap.sh
+bash test/logic_tests.sh
 ```
 
-If no terminal is available and `CLEANUP` is unset, the script defaults to **keep** — it will never uninstall your packages unattended. The older `SKIP_CLEANUP=1` opt-out still works and is treated the same as `CLEANUP=skip`.
+Lint locally with `shellcheck --severity=warning bootstrap.sh test/logic_tests.sh test/ci/*.sh`.
 
-> **Note:** the prompt is global (remove all listed / keep all) rather than per-package. Deciding which packages are safe to remove depends on Homebrew's dependency graph, so that decision is left to `brew bundle cleanup` rather than reimplemented here.
+CI (`.github/workflows/ci.yml`) runs these jobs:
 
-### Package Manager Overlaps (npm ↔ Homebrew)
-
-Occasionally a command in the Brewfile is *also* installed globally via npm, and the npm copy owns the command's path (e.g. `/opt/homebrew/bin/<cmd>`). Homebrew still installs its own copy but can't link it, so `brew bundle` keeps reporting the formula as missing. The script detects this "overlap":
-
-- If the keg is merely unlinked (nothing else in the way), it links it automatically.
-- If a foreign file owns the path, it identifies the culprit — naming the global npm package when that's the source — and, on an interactive terminal, **offers** to run `brew link --overwrite <formula>` so Homebrew's copy becomes the active command (this keeps it updatable via `brew upgrade`). It never does this unattended.
-
-Because Homebrew's copy is already installed, the fix is `brew link --overwrite`, *not* a reinstall. The duplicate npm package is **never uninstalled automatically** — the script only prints the exact `npm rm -g <package>` command for you to run yourself if you want to remove the leftover.
-
-### Cross-Platform Compatibility
-
-- **Homebrew casks** are macOS-only; on Linux they are silently ignored (casks needed on both are guarded with `if OS.mac?` in the Brewfile)
-- **All Brewfiles** are designed to be cross-platform (macOS and Linux)
-- **Shell configurations** are shell-specific:
-  - macOS uses Zsh (`.zprofile`, `.zshrc`)
-  - All Linux distros share one Bash set (`.bashrc`, `.bash_environment`) under `linux/`. Distro- and environment-specific behavior — Debian's `debian_chroot`, Ubuntu's `lesspipe`, and the WSL Edge `BROWSER` export — is guarded inside the files with file/executable tests, so the same file works across the apt, dnf, pacman, and zypper distro families (and WSL) alike.
-- **Aliases** live in a single `universal/.shell_aliases`, sourced by both bash and zsh. Tool-specific entries (git, Terraform, virtualenv) are guarded with `command -v`, so they self-disable when the tool is absent — the same file serves both the minimal and developer profiles.
-- **Universal dotfiles** (`.shell_aliases`, `.gitconfig`, `.gitmessage`) are applied to every profile; the `.poshthemes/` prompt theme is downloaded only for the Developer profile.
-
-## Git Identity
-
-The shipped `.gitconfig` carries `{FULL NAME}`, `{GITHUB EMAIL}`, and `{GITHUB USERNAME}` placeholders. Rather than leave you to edit them by hand after the run (easy to forget — commits end up attributed to `{FULL NAME}`), the script fills them in for you as its Git Personalization step:
-
-- On an interactive terminal it **prompts** for your full name, GitHub email, and GitHub username, then substitutes them into `~/.gitconfig` in place.
-- On a re-run where the placeholders are already gone, it detects that and leaves your `~/.gitconfig` untouched.
-
-You can supply the values non-interactively (for unattended runs) with environment variables:
-
-```bash
-GIT_NAME="Your Name" \
-GIT_EMAIL="your.email@example.com" \
-GIT_USERNAME="your-github-username" \
-bash bootstrap.sh
-```
-
-Any field you provide via env is used as-is; any field left unset is prompted for when a terminal is available. If **no** value is provided and there is **no** terminal (e.g. CI), the script leaves the placeholders in place rather than baking in blanks, and prints how to set them later:
-
-```bash
-git config --global user.name "Your Name"
-git config --global user.email "your.email@example.com"
-git config --global user.username "your-github-username"
-```
-
-**Note:** This behavior may grow as profiles are extended with additional customizable configurations.
+- **lint**: shellcheck on all scripts and on the bash dotfiles and `.shell_aliases`, `bash -n` on every bash file, `zsh -n` on the zsh files and `.shell_aliases`.
+- **tests**: `test/logic_tests.sh` on Ubuntu, and on macOS under the stock `/bin/bash` 3.2 that `bootstrap.sh` must support.
+- **smoke-linux**: runs `bootstrap.sh` with the minimal profile as a non-root sudo user in bare `ubuntu:24.04`, `fedora:latest`, `rockylinux/rockylinux:8`, `archlinux:latest` and `opensuse/tumbleweed` containers, where only `sudo` is preinstalled, then checks `brew`, `jq`, `rg`, `tmux`, the git identity, `~/.bashrc` and a clean `bash -ic true`.
+- **smoke-tarball**: runs a lone copy of `bootstrap.sh` against the commit under test, which exercises the tarball path with an already installed Homebrew.
+- **smoke-developer**: runs the developer profile on Ubuntu, covering the taps and the tflint checksum path.
+- **smoke-macos**: runs `bootstrap.sh` end to end under `/bin/bash` 3.2 with the minimal profile and checks a login zsh.
 
 ## Maintenance
 
-### Adding or Updating Packages
+### Adding or updating packages
 
-Edit the appropriate Brewfile in `universal/brewfiles/`:
+Edit `universal/brewfiles/Brewfile-developer` or `Brewfile-minimal`. Use `brew "name"` for formulae and `cask "name"` for applications; guard macOS-only casks with `if OS.mac?` so Linux skips them (some casks, such as `1password-cli`, work on both). Packages are not version-pinned.
 
-- Add packages as `brew "package_name"` (formulae) or `cask "package_name"` (macOS applications)
-- Update comments to explain why the package is included
-- Test on both macOS and Linux to ensure compatibility
+### Updating shell configuration
 
-### Updating Shell Configurations
+- Base rc: `linux/.bashrc`, `macos/.zshrc`, `macos/.zprofile`
+- Developer add-on: `linux/profile-developer/.bashrc.developer`, `macos/profile-developer/.zshrc.developer`
+- Aliases and functions for both shells: `universal/.shell_aliases` (keep it portable and guard tool-specific parts)
 
-Edit dotfiles in the respective profile directories:
+Keep `bootstrap.sh` compatible with bash 3.2, the stock bash on macOS: no associative arrays and no bash 4+ expansions. The bash dotfiles may use bash 4.4+.
 
-- **macOS:** `macos/profile-{developer,minimal}/.z*`
-- **Linux (all distros):** `linux/profile-{developer,minimal}/.bash*`
-- **Aliases (all shells/OSes):** `universal/.shell_aliases`
+Test shell changes in a real login shell (`bash -l`, or a new SSH session), not only `exec bash`: when `~/.bash_profile` exists, a login bash ignores `~/.profile`. For prompt theme changes, `oh-my-posh debug 2>&1 | grep ERROR` shows template errors that otherwise fail silently.
 
-Keep anything portable in `.shell_aliases` and guard tool- or OS-specific behavior with `command -v` or file tests, rather than forking per-OS copies.
+### Adding new profiles
 
-**`PROMPT_COMMAND` ordering (Linux/Bash):** `oh-my-posh init bash` stores its `_omp_hook` in a `PROMPT_COMMAND` *array*, so it must be the last thing that touches that variable. Assigning a plain string to an existing array replaces only element `[0]`, which silently drops the hook. Keep every `PROMPT_COMMAND` assignment (such as `history -a`) above the `oh-my-posh init` line, and leave the array-flattening block that follows the init in place — array-form `PROMPT_COMMAND` is only honored from Bash 5.1 on, and Bash 4.4 (RHEL/Rocky/Alma 8) would otherwise never run the hook. `test/logic_tests.sh` enforces both invariants.
+To add a profile such as `security`:
 
-**Validating a shell config change:** test it in a real **login** shell — a fresh SSH session or `bash -l` — not just `exec bash`. Login shells read a different file chain (notably, when `~/.bash_profile` exists, Bash ignores `~/.profile` entirely), so `exec bash` can pass while an SSH login fails. For prompt-theme changes also run `oh-my-posh debug 2>&1 | grep ERROR` to surface template errors, which otherwise fail silently.
-
-Changes are applied the next time the bootstrap script is run.
-
-### Adding New Profiles
-
-To create a new profile (e.g., `profile-security`):
-
-1. Create `universal/brewfiles/Brewfile-security`
-2. Create `macos/profile-security/` with `.zprofile`, `.zshrc`
-3. Create `linux/profile-security/` with `.bashrc` (and `.bash_environment` if needed)
-4. Update `bootstrap.sh` in this repository to add the new profile to the selection menu
-
-## Notes
-
-- A dotfile that simply isn't present in a profile (an HTTP 404) is logged as an informational note and does not cause installation failure. A *download* failure (TLS, DNS, connection) is instead surfaced as a warning, so a real network or certificate problem is never mistaken for a missing-but-optional file.
-- The bootstrap script is idempotent—running it multiple times is safe; unchanged dotfiles are detected and left alone, and each run's backups carry a unique timestamp so they never clobber one another
-- Homebrew packages are **not** version-pinned; each run installs the current version from the tap. Add a `@version` suffix in the Brewfile if you need to pin a specific release.
-- The Oh My Posh prompt theme (`.poshthemes/`) is downloaded only for the Developer profile
-- Homebrew's `shellenv` line is appended to `~/.profile` and, when that file exists, to `~/.bash_profile` as well. RHEL-family systems ship a `~/.bash_profile` by default, and a Bash login shell reads it *instead of* `~/.profile` — so writing only to `~/.profile` would leave `brew` off the PATH on SSH login there. Both writes are guarded against duplication on re-runs.
+1. Create `universal/brewfiles/Brewfile-security`.
+2. Add `security) echo "Brewfile-security" ;;` to `brewfile_for_profile` in `bootstrap.sh`, and add it to the menu in `select_profile`.
+3. If it needs extra shell config, add `macos/profile-security/.zshrc.security` and `linux/profile-security/.bashrc.security`, and teach `shell_addon_name_for` and `shell_addon_for` about them. The base rc must source the add-on last, or the `PROMPT_COMMAND` invariant is lost.
+4. If it needs extra directories, list them in `profile_specific_dirs_for`.
+5. Add tests to `test/logic_tests.sh`.
 
 ## Related Links
 
-- **Bootstrap Script:** [bootstrap.sh](bootstrap.sh)
-- **Homebrew:** [https://brew.sh](https://brew.sh)
-- **Oh My Posh (theme engine):** [https://ohmyposh.dev](https://ohmyposh.dev)
+- [bootstrap.sh](bootstrap.sh)
+- [Homebrew](https://brew.sh)
+- [Oh My Posh](https://ohmyposh.dev)

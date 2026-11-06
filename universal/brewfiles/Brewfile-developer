@@ -2,7 +2,6 @@
 # every formula in a tap when it loads it, so we trust the whole tap rather
 # than a single formula (per-formula trust misses sibling formulae the loader
 # touches, e.g. sinelaw/fresh/fresh).
-tap "jandedobbeleer/oh-my-posh", trusted: true
 tap "sinelaw/fresh", trusted: true
 tap "terraform-linters/tap", trusted: true   # tflint (macOS cask; Linux installed by bootstrap.sh)
 
@@ -18,7 +17,7 @@ brew "sinelaw/fresh/fresh"        # Fresh terminal text editor (fresh-editor is 
 brew "ripgrep"                    # Fast search utility
 brew "tmux"                       # Terminal multiplexer
 brew "tree"                       # Directory tree viewer
-brew "tldr"                       # Simplified manual pages
+brew "tlrc"                       # Simplified manual pages (provides the tldr command)
 brew "age"                        # Modern encryption tool
 brew "gnupg"                      # GPG encryption/signing
 brew "ipcalc"                     # IPv4/IPv6 subnet calculator
@@ -68,7 +67,7 @@ brew "ansible-lint"               # Ansible linter
 
 # Misc
 brew "just"                       # Task runner
-brew "jandedobbeleer/oh-my-posh/oh-my-posh"  # Prompt theming engine
+brew "oh-my-posh"                 # Prompt theming engine
 brew "pre-commit"                 # Git hook manager
 cask "1password-cli"              # 1Password command-line tool (macOS + Linux)
 

@@ -1,31 +1,28 @@
-# Homebrew
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
+# ~/.bashrc.developer: developer-profile add-on, sourced LAST by ~/.bashrc.
+#
+# ~/.bashrc has already set PROMPT_COMMAND and the fallback PS1 by the time this
+# file runs; see the ordering invariant on the oh-my-posh block below.
 
 # Projects
 export PROJECTS_HOME=$HOME/projects
 
 # Python Virtualenv
 # virtualenv and virtualenvwrapper are installed via Homebrew, so we let
-# virtualenvwrapper discover the virtualenv binary from PATH rather than
-# hardcoding a path. (VIRTUALENVWRAPPER_PYTHON still points at the system
-# python3, which virtualenvwrapper itself runs under.)
-export VIRTUALENVWRAPPER_PYTHON=/usr/bin/python3
+# virtualenvwrapper discover the virtualenv binary from PATH. virtualenvwrapper.sh
+# picks its own interpreter, so VIRTUALENVWRAPPER_PYTHON is left unset.
 export WORKON_HOME=$HOME/.virtualenvs
 
 # Guard the source so a shell doesn't error out if virtualenvwrapper isn't
 # installed (e.g. a partial bootstrap or the minimal profile).
-if [ -f /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh ]; then
-    source /home/linuxbrew/.linuxbrew/bin/virtualenvwrapper.sh
+if [ -n "${HOMEBREW_PREFIX:-}" ] && [ -f "$HOMEBREW_PREFIX/bin/virtualenvwrapper.sh" ]; then
+    source "$HOMEBREW_PREFIX/bin/virtualenvwrapper.sh"
 fi
-
-# Poetry
-#export PATH=$PATH:$HOME/.poetry/bin
 
 # Golang Environment
 # Go is installed via Homebrew, which puts `go` on PATH and lets the toolchain
-# auto-detect GOROOT from the binary's location. Setting GOROOT manually to a
-# non-Homebrew path (e.g. /usr/local/go) breaks every `go` command, so we omit
-# it. GOPATH/GOBIN are our workspace dirs and stay.
+# auto-detect GOROOT from the binary's location. Do not set GOROOT: a
+# non-Homebrew path (e.g. /usr/local/go) breaks every `go` command. GOPATH and
+# GOBIN are the workspace dirs.
 export GOPATH=$PROJECTS_HOME/go
 export GOBIN=$GOPATH/bin
 export PATH=$PATH:$GOBIN
@@ -36,10 +33,11 @@ export PATH=$PATH:$GOBIN
 # PROMPT_COMMAND. `oh-my-posh init bash` converts PROMPT_COMMAND into an array
 # containing its _omp_hook, and assigning a plain string to an existing array
 # replaces only element [0] -- so a later `PROMPT_COMMAND='history -a'` would
-# silently drop the hook and no prompt would ever be drawn. Keep every other
-# PROMPT_COMMAND assignment (see .bashrc) above this point.
-if [ -f /home/linuxbrew/.linuxbrew/bin/oh-my-posh ] && [ "$TERM_PROGRAM" != "vscode" ]; then
-    eval "$(/home/linuxbrew/.linuxbrew/bin/oh-my-posh init bash --config ~/.poshthemes/meridian-2.omp.json)"
+# silently drop the hook and no prompt would ever be drawn. The other
+# PROMPT_COMMAND assignment and the fallback PS1 live in ~/.bashrc, which sources
+# this file last. Without oh-my-posh the fallback prompt is left as it is.
+if command -v oh-my-posh >/dev/null 2>&1 && [ "$TERM_PROGRAM" != "vscode" ]; then
+    eval "$(oh-my-posh init bash --config ~/.poshthemes/meridian-2.omp.json)"
 
     # Array-form PROMPT_COMMAND is only honored from bash 5.1 on. Bash 4.4 (the
     # stock shell on RHEL/Rocky/Alma 8) runs element [0] and ignores the rest,
@@ -52,13 +50,7 @@ if [ -f /home/linuxbrew/.linuxbrew/bin/oh-my-posh ] && [ "$TERM_PROGRAM" != "vsc
         PROMPT_COMMAND="$_omp_prompt_command"
         unset _omp_prompt_command
     fi
-else
-    PS1="\[$CYAN\]\[$GREEN\][\w]$(__git_ps1)\$ \[$NORMAL\]"
-    PS2='\[$GREEN\]continue-> $NORMAL'
 fi
-
-# TFenv: Terraform version management
-export PATH=$PATH:$HOME/.tfenv/bin
 
 # Browser Settings (WSL only)
 # Point the browser at the Windows Edge binary when running under WSL. Guarded
@@ -66,6 +58,3 @@ export PATH=$PATH:$HOME/.tfenv/bin
 if [ -x "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" ]; then
     export BROWSER="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 fi
-
-# Python UV
-# eval "$(uv generate-shell-completion bash)"
