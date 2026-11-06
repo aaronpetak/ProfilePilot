@@ -1,0 +1,5 @@
+# Every file here is a shell script, dotfile or text config that bash or zsh
+# reads directly, so it must keep LF line endings even in a Windows checkout
+# (for example a clone made from the Windows side of WSL). A CRLF .bashrc or
+# bootstrap.sh fails with "$'\r': command not found".
+* text=auto eol=lf
