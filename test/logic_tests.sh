@@ -250,6 +250,32 @@ check "includeIf identity overrides .gitconfig.local" \
     "PerDir"
 
 # ---------------------------------------------------------------------------
+# Homebrew prefix detection (find_brew_prefix)
+# The candidate list is replaced with temp directories; nothing real is probed.
+# ---------------------------------------------------------------------------
+brew_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        eval "$(extract_fn find_brew_prefix)"
+        brew_prefix_candidates() { echo "$tmp/a"; echo "$tmp/b"; echo "$tmp/c"; }
+        eval "$1"
+        find_brew_prefix | sed "s#$tmp#TMP#"
+        echo "rc=${PIPESTATUS[0]}"
+    )
+}
+
+check "find_brew_prefix: none installed -> rc 1" \
+    "$(brew_probe ':' | tr '\n' ' ')" "rc=1 "
+check "find_brew_prefix: picks the first candidate with brew" \
+    "$(brew_probe 'mkdir -p "$tmp/b/bin" "$tmp/c/bin"; touch "$tmp/b/bin/brew" "$tmp/c/bin/brew"; chmod +x "$tmp/b/bin/brew" "$tmp/c/bin/brew"' | tr '\n' ' ')" "TMP/b rc=0 "
+check "find_brew_prefix: ignores a non-executable brew" \
+    "$(brew_probe 'mkdir -p "$tmp/a/bin"; touch "$tmp/a/bin/brew"' | tr '\n' ' ')" "rc=1 "
+check "brew_prefix_candidates lists the four known prefixes" \
+    "$( (HOME=/h; eval "$(extract_fn brew_prefix_candidates)"; brew_prefix_candidates | tr '\n' ' ') )" \
+    "/opt/homebrew /usr/local /home/linuxbrew/.linuxbrew /h/.linuxbrew "
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
