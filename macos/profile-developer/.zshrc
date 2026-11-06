@@ -3,8 +3,19 @@
 ###############################################################################
 # Add Homebrew-managed Zsh completion scripts to the function search path.
 # These enhance autocompletion for tools installed through Homebrew.
-if [[ -d "/opt/homebrew/share/zsh/site-functions" ]]; then
-    fpath+=('/opt/homebrew/share/zsh/site-functions')
+# A non-login zsh (e.g. a nested shell) may not have run .zprofile, so fall back
+# to detecting the prefix here when HOMEBREW_PREFIX is not already set.
+if [[ -z "${HOMEBREW_PREFIX:-}" ]]; then
+    for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [[ -x "$_brew" ]]; then
+            eval "$("$_brew" shellenv zsh)"
+            break
+        fi
+    done
+    unset _brew
+fi
+if [[ -n "${HOMEBREW_PREFIX:-}" && -d "$HOMEBREW_PREFIX/share/zsh/site-functions" ]]; then
+    fpath+=("$HOMEBREW_PREFIX/share/zsh/site-functions")
 fi
 
 # Initialize Zsh’s completion framework.
@@ -42,7 +53,7 @@ fi
 if [[ -d "$HOME/.virtualenvs" ]] && command -v virtualenvwrapper.sh >/dev/null 2>&1; then
     export WORKON_HOME="$HOME/.virtualenvs"
     export VIRTUALENVWRAPPER_PYTHON="$(command -v python3)"
-    source /opt/homebrew/bin/virtualenvwrapper.sh
+    source "$(command -v virtualenvwrapper.sh)"
 fi
 
 

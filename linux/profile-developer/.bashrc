@@ -4,6 +4,16 @@
 # specific blocks below are guarded by file/executable tests, so this single
 # file works unchanged on both families.
 
+# Homebrew: put the first Homebrew install found on PATH. Done first, before
+# ~/.shell_aliases is sourced, so its command -v guards can see Homebrew tools.
+for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+    if [ -x "$_brew" ]; then
+        eval "$("$_brew" shellenv bash)"
+        break
+    fi
+done
+unset _brew
+
 # colors
 RED=$(tput setaf 1)
 GREEN=$(tput setaf 2)
