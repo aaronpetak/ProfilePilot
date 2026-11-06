@@ -15,15 +15,6 @@ DOTFILES_ARCHIVE_URL="https://github.com/$DOTFILES_REPO_SLUG/archive/refs/heads/
 # Homebrew installation paths (OS-specific)
 HOMEBREW_LINUX_INSTALL_DIR="/home/linuxbrew/.linuxbrew" # Default Linux Homebrew path
 HOMEBREW_LINUX_PATH="$HOMEBREW_LINUX_INSTALL_DIR/bin"   # Path to brew executable on Linux
-# macOS Homebrew prefix depends on the CPU: Apple Silicon installs to
-# /opt/homebrew, Intel to /usr/local. Hardcoding /opt/homebrew broke Intel Macs
-# (the PATH-wiring branch never matched, so every later `brew` call failed).
-if [[ "$(uname -m)" == "arm64" ]]; then
-    HOMEBREW_MACOS_INSTALL_DIR="/opt/homebrew"          # Apple Silicon
-else
-    HOMEBREW_MACOS_INSTALL_DIR="/usr/local"             # Intel
-fi
-HOMEBREW_MACOS_PATH="$HOMEBREW_MACOS_INSTALL_DIR/bin"   # Path to brew executable on macOS
 
 # Shell-specific dotfiles to download and apply. Aliases live in the universal
 # .shell_aliases file (sourced by both shells), so they are NOT listed here.
@@ -266,6 +257,29 @@ setup_brew_path() {
     eval "$shellenv_cmd"
 }
 
+# Homebrew's possible install prefixes, one per line, in detection order:
+# Apple Silicon, Intel macOS / legacy, the Linux default, and a per-user Linux
+# install.
+brew_prefix_candidates() {
+    echo "/opt/homebrew"
+    echo "/usr/local"
+    echo "/home/linuxbrew/.linuxbrew"
+    echo "$HOME/.linuxbrew"
+}
+
+# Print the first candidate prefix that contains an executable bin/brew.
+# Returns 1 (printing nothing) when Homebrew is not installed anywhere known.
+find_brew_prefix() {
+    local prefix
+    while IFS= read -r prefix; do
+        if [[ -x "$prefix/bin/brew" ]]; then
+            echo "$prefix"
+            return 0
+        fi
+    done < <(brew_prefix_candidates)
+    return 1
+}
+
 # Install Homebrew if not already present, then configure PATH
 install_homebrew() {
     if command -v brew >/dev/null 2>&1; then
@@ -275,13 +289,10 @@ install_homebrew() {
 
     # Brew may be installed but not yet in PATH (e.g. re-run after a partial install).
     # Skip the installer and just wire up the PATH.
-    if [[ -x "$HOMEBREW_LINUX_PATH/brew" ]]; then
+    local prefix
+    if prefix=$(find_brew_prefix); then
         log "Homebrew already installed, configuring PATH..."
-        setup_brew_path "$HOMEBREW_LINUX_PATH/brew"
-        return
-    elif [[ -x "$HOMEBREW_MACOS_PATH/brew" ]]; then
-        log "Homebrew already installed, configuring PATH..."
-        setup_brew_path "$HOMEBREW_MACOS_PATH/brew"
+        setup_brew_path "$prefix/bin/brew"
         return
     fi
 
@@ -293,15 +304,20 @@ install_homebrew() {
         ensure_linux_packages git curl tar gzip
     fi
 
+    # Download the installer to a file first. `/bin/bash -c "$(curl ...)"` exits
+    # 0 when curl fails (the substitution is empty), so a failed download would
+    # look like a successful install.
     log "Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL "$HOMEBREW_INSTALL_URL")" ||
-        fatal "Failed to install Homebrew from $HOMEBREW_INSTALL_URL"
+    local installer="$TMPDIR/homebrew-install.sh"
+    curl -fsSL "$HOMEBREW_INSTALL_URL" -o "$installer" ||
+        fatal "Failed to download the Homebrew installer from $HOMEBREW_INSTALL_URL"
+    /bin/bash "$installer" ||
+        fatal "The Homebrew installer failed."
 
-    if [[ -d "$HOMEBREW_LINUX_INSTALL_DIR" ]]; then
-        setup_brew_path "$HOMEBREW_LINUX_PATH/brew"
-    elif [[ -d "$HOMEBREW_MACOS_INSTALL_DIR" ]]; then
-        setup_brew_path "$HOMEBREW_MACOS_PATH/brew"
-    fi
+    # Never wire shellenv for a brew that is not there.
+    prefix=$(find_brew_prefix) ||
+        fatal "Homebrew installer finished but no brew executable was found under any known prefix."
+    setup_brew_path "$prefix/bin/brew"
 }
 
 # Install build tools required by Homebrew on Linux.
