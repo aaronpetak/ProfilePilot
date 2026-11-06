@@ -316,6 +316,49 @@ check "brew_prefix_candidates lists the four known prefixes" \
     "/opt/homebrew /usr/local /home/linuxbrew/.linuxbrew /h/.linuxbrew "
 
 # ---------------------------------------------------------------------------
+# Homebrew PATH wiring (setup_brew_path, ensure_zprofile_brew, stale lines)
+# All run against a throwaway HOME with a fake brew; nothing real is touched.
+# ---------------------------------------------------------------------------
+brew_wiring() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        export HOME="$tmp/home"
+        mkdir -p "$HOME" "$tmp/prefix/bin"
+        printf '#!/bin/sh\necho "export WIRED=1"\n' > "$tmp/prefix/bin/brew"
+        chmod +x "$tmp/prefix/bin/brew"
+        log() { echo "LOG: $*"; }
+        eval "$(extract_fn append_line_once)"
+        eval "$(extract_fn setup_brew_path)"
+        eval "$(extract_fn ensure_zprofile_brew)"
+        eval "$(extract_fn warn_stale_brew_lines)"
+        eval "$1" 2>&1 | sed "s#$tmp#TMP#g"
+    )
+}
+
+check "setup_brew_path on macOS writes no ~/.profile but wires the session" \
+    "$(brew_wiring 'OS_TYPE=macos; setup_brew_path "$tmp/prefix/bin/brew"; echo "WIRED=${WIRED:-0} profile=$(test -e "$HOME/.profile" && echo yes || echo no)"')" \
+    "WIRED=1 profile=no"
+check "setup_brew_path on Linux writes the detected prefix to ~/.profile" \
+    "$(brew_wiring 'OS_TYPE=linux; setup_brew_path "$tmp/prefix/bin/brew"; cat "$HOME/.profile"')" \
+    'eval "$(TMP/prefix/bin/brew shellenv bash)"'
+check "setup_brew_path on Linux is idempotent" \
+    "$(brew_wiring 'OS_TYPE=linux; setup_brew_path "$tmp/prefix/bin/brew"; setup_brew_path "$tmp/prefix/bin/brew"; wc -l < "$HOME/.profile" | tr -d " "')" \
+    "1"
+check "ensure_zprofile_brew appends a zsh shellenv line to a bare file" \
+    "$(brew_wiring 'ensure_zprofile_brew "$tmp/prefix/bin/brew" >/dev/null; cat "$HOME/.zprofile"')" \
+    'eval "$(TMP/prefix/bin/brew shellenv zsh)"'
+check "ensure_zprofile_brew leaves a file that already has shellenv alone" \
+    "$(brew_wiring 'echo "eval \"\$(/x/brew shellenv zsh)\"" > "$HOME/.zprofile"; ensure_zprofile_brew "$tmp/prefix/bin/brew" >/dev/null; wc -l < "$HOME/.zprofile" | tr -d " "')" \
+    "1"
+check "warn_stale_brew_lines flags a shellenv line for a missing brew" \
+    "$(brew_wiring 'echo "eval \"\$(/nonexistent/bin/brew shellenv bash)\"" > "$HOME/.profile"; warn_stale_brew_lines')" \
+    "LOG: Warning: TMP/home/.profile runs /nonexistent/bin/brew shellenv, but that brew does not exist. Remove or fix that line."
+check "warn_stale_brew_lines is silent when the brew exists" \
+    "$(brew_wiring 'echo "eval \"\$($tmp/prefix/bin/brew shellenv bash)\"" > "$HOME/.profile"; warn_stale_brew_lines')" \
+    ""
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"

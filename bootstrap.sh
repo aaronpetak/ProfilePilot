@@ -12,10 +12,6 @@ DOTFILES_REPO="https://raw.githubusercontent.com/$DOTFILES_REPO_SLUG/main"
 HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 DOTFILES_ARCHIVE_URL="https://github.com/$DOTFILES_REPO_SLUG/archive/refs/heads/main.zip"
 
-# Homebrew installation paths (OS-specific)
-HOMEBREW_LINUX_INSTALL_DIR="/home/linuxbrew/.linuxbrew" # Default Linux Homebrew path
-HOMEBREW_LINUX_PATH="$HOMEBREW_LINUX_INSTALL_DIR/bin"   # Path to brew executable on Linux
-
 # Shell-specific dotfiles to download and apply. Aliases live in the universal
 # .shell_aliases file (sourced by both shells), so they are NOT listed here.
 #
@@ -234,27 +230,61 @@ append_line_once() {
 
 # Configure Homebrew PATH for the current session.
 # .bashrc/.zshrc are overwritten by apply_dotfiles, which already contains the
-# shellenv line; we only write to the login-shell startup files here for
-# non-interactive shells and to keep brew available throughout the rest of
-# this script.
+# shellenv detection; on Linux we also write to the login-shell startup files
+# here for non-interactive shells and to keep brew available throughout the
+# rest of this script. macOS needs no ~/.profile entry: zsh reads ~/.zprofile,
+# which ensure_zprofile_brew handles after the dotfiles are applied.
 # Args: $1 - path to brew executable (e.g., /opt/homebrew/bin/brew)
 setup_brew_path() {
     local brew_path="$1"
     local shellenv_cmd="eval \"\$($brew_path shellenv bash)\""
 
-    append_line_once "$HOME/.profile" "$shellenv_cmd"
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        append_line_once "$HOME/.profile" "$shellenv_cmd"
 
-    # A bash login shell reads ~/.bash_profile *instead of* ~/.profile whenever
-    # the former exists -- and on RHEL-family systems (RHEL/Rocky/Alma/Fedora)
-    # ~/.bash_profile is created by default. Writing only to ~/.profile there
-    # means the shellenv line never runs on an SSH login and brew is missing
-    # from PATH. Mirror the line into ~/.bash_profile when it exists.
-    if [[ -f "$HOME/.bash_profile" ]]; then
-        append_line_once "$HOME/.bash_profile" "$shellenv_cmd"
+        # A bash login shell reads ~/.bash_profile *instead of* ~/.profile
+        # whenever the former exists -- and on RHEL-family systems
+        # (RHEL/Rocky/Alma/Fedora) ~/.bash_profile is created by default.
+        # Writing only to ~/.profile there means the shellenv line never runs on
+        # an SSH login and brew is missing from PATH. Mirror the line into
+        # ~/.bash_profile when it exists.
+        if [[ -f "$HOME/.bash_profile" ]]; then
+            append_line_once "$HOME/.bash_profile" "$shellenv_cmd"
+        fi
     fi
 
     # Update PATH in the current session so brew works immediately
     eval "$shellenv_cmd"
+}
+
+# macOS: make sure ~/.zprofile evaluates brew shellenv. The profile's
+# .zprofile does this, but it may not have been applied (the user kept their own
+# file), in which case a login zsh would have no brew on PATH. Append a zsh
+# shellenv line only when the file has no shellenv at all.
+# Args: $1 - path to brew executable
+ensure_zprofile_brew() {
+    local brew_path="$1" zprofile="$HOME/.zprofile"
+    if grep -qs 'shellenv' "$zprofile"; then
+        return 0
+    fi
+    log "Adding Homebrew shellenv to ~/.zprofile."
+    append_line_once "$zprofile" "eval \"\$($brew_path shellenv zsh)\""
+}
+
+# Warn about shellenv lines in ~/.profile and ~/.bash_profile that point at a
+# brew which no longer exists (e.g. written for the wrong prefix by an earlier
+# version). They fail with "No such file" at every login; we only report them,
+# never edit the user's startup files.
+warn_stale_brew_lines() {
+    local file brew_path
+    for file in "$HOME/.profile" "$HOME/.bash_profile"; do
+        [[ -f "$file" ]] || continue
+        while IFS= read -r brew_path; do
+            [[ -n "$brew_path" && ! -x "$brew_path" ]] || continue
+            log "Warning: $file runs $brew_path shellenv, but that brew does not exist. Remove or fix that line."
+        done < <(sed -n 's/^eval "\$(\(.*\) shellenv[^)]*)"$/\1/p' "$file")
+    done
+    return 0
 }
 
 # Homebrew's possible install prefixes, one per line, in detection order:
@@ -421,7 +451,9 @@ repair_ca_certificates() {
     command -v brew >/dev/null 2>&1 || return 0
 
     # Only act if openssl@3 is installed but its cert.pem is a broken symlink.
-    local cert_pem="$HOMEBREW_LINUX_INSTALL_DIR/etc/openssl@3/cert.pem"
+    local prefix
+    prefix=$(brew --prefix 2>/dev/null) || return 0
+    local cert_pem="$prefix/etc/openssl@3/cert.pem"
     brew list ca-certificates >/dev/null 2>&1 || return 0
     if [[ -e "$cert_pem" ]]; then
         return 0
@@ -457,7 +489,8 @@ install_tflint_linux() {
     esac
 
     local url="https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_${arch}.zip"
-    local dest_dir="$HOMEBREW_LINUX_PATH"
+    local dest_dir
+    dest_dir="$(brew --prefix 2>/dev/null)/bin" || { log "Note: could not determine the Homebrew prefix; skipping tflint."; return; }
     local tmp_zip="$TMPDIR/tflint.zip"
 
     log "Installing tflint (linux_${arch}) from GitHub releases..."
@@ -1186,6 +1219,7 @@ download_brewfile "$BREWFILE"
 ###############################################################################
 
 install_homebrew
+warn_stale_brew_lines
 install_build_tools
 
 # Heal a prior run that installed ca-certificates before awk was available.
@@ -1221,6 +1255,9 @@ download_dotfiles "$DOTFILES_PROFILE" "$OS_DOTFILES_DIR"
 # Preserve an identity from a pre-existing ~/.gitconfig before it can be replaced.
 migrate_gitconfig_identity
 apply_dotfiles "$DOTFILES_PROFILE" "$SHELL_TYPE" "$OS_DOTFILES_DIR"
+if [[ "$OS_TYPE" == "macos" ]]; then
+    ensure_zprofile_brew "$(brew --prefix)/bin/brew"
+fi
 
 # Write the git identity to ~/.gitconfig.local (prompting if needed) and verify
 # git can read it through ~/.gitconfig.
