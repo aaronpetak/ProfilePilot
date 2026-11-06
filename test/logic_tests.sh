@@ -954,6 +954,39 @@ for sh in bash zsh; do
 done
 
 # ---------------------------------------------------------------------------
+# Arch: one full-upgrade transaction, failure is fatal
+# ---------------------------------------------------------------------------
+# Runs $2 with pacman as the only package manager. run_as_root records its
+# arguments; it fails when $1 is "fail". Prints the recorded calls and whether
+# the call returned (a fatal() exits the subshell before "returned").
+pacman_probe() {
+    (
+        OS_TYPE=linux
+        command() {
+            if [[ "$1" == "-v" ]]; then
+                case "$2" in dnf|apt-get|zypper|gcc) return 1 ;; pacman) return 0 ;; esac
+            fi
+            builtin command "$@"
+        }
+        run_as_root() { echo "root: $*"; [[ "$PACMAN_MODE" != "fail" ]]; }
+        export PACMAN_MODE="$1"
+        eval "$2"
+        echo "returned"
+    )
+}
+check "ensure_linux_packages on Arch: single pacman -Syu with the packages" \
+    "$(pacman_probe ok 'ensure_linux_packages definitely-missing-a definitely-missing-b' | tr '\n' '|')" \
+    "root: pacman -Syu --needed --noconfirm definitely-missing-a definitely-missing-b|returned|"
+check "ensure_linux_packages on Arch: pacman failure is fatal" \
+    "$(pacman_probe fail 'ensure_linux_packages definitely-missing-a' | tr '\n' '|')" \
+    "root: pacman -Syu --needed --noconfirm definitely-missing-a|FATAL: Failed to install: definitely-missing-a|"
+check "install_build_tools on Arch: pacman failure is fatal, no separate -Sy" \
+    "$(pacman_probe fail 'ensure_linux_packages() { :; }; install_build_tools' | tr '\n' '|')" \
+    "root: pacman -Syu --needed --noconfirm base-devel|FATAL: Failed to install base-devel via pacman|"
+check "bootstrap.sh no longer runs a bare pacman -Sy or ignores pacman failure" \
+    "$(grep -c 'pacman -Sy --noconfirm\|pacman -S --needed' "$BOOTSTRAP")" "0"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"

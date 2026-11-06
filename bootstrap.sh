@@ -411,11 +411,11 @@ install_build_tools() {
         run_as_root apt-get install -y build-essential || fatal "Failed to install build-essential"
     elif command -v pacman >/dev/null 2>&1; then
         # Arch / Manjaro. base-devel is a package group; --needed skips ones
-        # already present so a re-run is a no-op. -Sy refreshes the sync DBs
-        # first (empty on a fresh install, which makes -S fail "target not
-        # found").
-        run_as_root pacman -Sy --noconfirm || true
-        run_as_root pacman -S --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
+        # already present so a re-run is a no-op. -Syu refreshes the sync DBs
+        # (empty on a fresh install) and upgrades in the same transaction:
+        # Arch does not support partial upgrades, so installing after a bare
+        # -Sy could leave the system inconsistent. Failure is fatal.
+        run_as_root pacman -Syu --needed --noconfirm base-devel || fatal "Failed to install base-devel via pacman"
     elif command -v zypper >/dev/null 2>&1; then
         # openSUSE. The "devel_basis" pattern is the equivalent build-tool bundle.
         run_as_root zypper install -y -t pattern devel_basis 2>/dev/null || \
@@ -460,11 +460,10 @@ ensure_linux_packages() {
         run_as_root apt-get update || true
         run_as_root apt-get install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v pacman >/dev/null 2>&1; then
-        # Refresh the sync databases first: on a fresh Arch/Manjaro system they
-        # are empty, so `pacman -S <pkg>` fails with "target not found" until a
-        # `-Sy` has run. This is the pacman equivalent of `apt-get update` above.
-        run_as_root pacman -Sy --noconfirm || true
-        run_as_root pacman -S --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
+        # -Syu refreshes the sync databases (empty on a fresh Arch/Manjaro
+        # system, where a bare -S fails "target not found") and upgrades in the
+        # same transaction, since Arch does not support partial upgrades.
+        run_as_root pacman -Syu --needed --noconfirm "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
     elif command -v zypper >/dev/null 2>&1; then
         run_as_root zypper refresh || true
         run_as_root zypper install -y "${missing[@]}" || fatal "Failed to install: ${missing[*]}"
