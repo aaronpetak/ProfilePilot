@@ -453,6 +453,12 @@ check "missing_linux_packages: nothing requested -> nothing missing" \
     "$(pkg_probe '')" ""
 
 # ---------------------------------------------------------------------------
+# brew invocation policy (static checks; these steps need a real Homebrew)
+# ---------------------------------------------------------------------------
+check "brew update failure is tolerated" \
+    "$(grep -c '^[[:space:]]*brew update || log ' "$BOOTSTRAP")" "1"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
