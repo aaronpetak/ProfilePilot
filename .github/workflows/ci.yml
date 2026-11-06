@@ -5,22 +5,151 @@ on:
     branches: [main]
   pull_request:
 
-# The runner's shellcheck is used directly (ubuntu-latest ships it). We gate at
-# --severity=warning: info-level notes (SC2018/SC2019 about `tr` character
-# ranges) are deliberate for the Bash 3.2 compatibility the script must keep, so
-# gating on them would be noise. Warnings and errors do fail the build.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# shellcheck gates at --severity=warning: info-level notes are style hints, while
+# warnings and errors fail the build.
 jobs:
-  lint-and-test:
-    name: shellcheck + logic tests
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: shellcheck
-        run: shellcheck --severity=warning bootstrap.sh test/logic_tests.sh
+      - name: install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
 
-      - name: syntax check
-        run: bash -n bootstrap.sh
+      - name: shellcheck (scripts)
+        run: shellcheck --severity=warning bootstrap.sh test/logic_tests.sh test/ci/*.sh
 
-      - name: logic tests
+      - name: shellcheck (dotfiles, as bash)
+        run: shellcheck --severity=warning -s bash linux/.bashrc linux/profile-developer/.bashrc.developer universal/.shell_aliases
+
+      - name: bash syntax
+        run: |
+          for f in bootstrap.sh test/logic_tests.sh test/ci/*.sh \
+                   linux/.bashrc linux/profile-developer/.bashrc.developer universal/.shell_aliases; do
+            bash -n "$f"
+          done
+
+      - name: zsh syntax
+        run: |
+          for f in macos/.zprofile macos/.zshrc macos/profile-developer/.zshrc.developer universal/.shell_aliases; do
+            zsh -n "$f"
+          done
+
+  tests:
+    name: logic tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: logic tests (Linux)
+        if: runner.os == 'Linux'
         run: bash test/logic_tests.sh
+
+      # Explicit /bin/bash is the stock bash 3.2 that bootstrap.sh must run on;
+      # plain `bash` on the runner is Homebrew's 5.x.
+      - name: logic tests (macOS, stock bash 3.2)
+        if: runner.os == 'macOS'
+        run: |
+          /bin/bash --version
+          /bin/bash -n bootstrap.sh
+          /bin/bash test/logic_tests.sh
+
+  smoke-linux:
+    name: smoke (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:24.04
+          - fedora:latest
+          - rockylinux/rockylinux:8
+          - archlinux:latest
+          - opensuse/tumbleweed
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: bootstrap in a bare container
+        run: docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" bash /src/test/ci/container-smoke.sh
+
+  smoke-tarball:
+    name: smoke (tarball mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PR_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+      PR_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Only bootstrap.sh is copied, so it cannot find a checkout next to itself
+      # and must download the tarball of this exact commit. The runner user has
+      # passwordless sudo and Homebrew installed but not on PATH, which exercises
+      # the already-installed path.
+      - name: run bootstrap.sh alone
+        run: |
+          set -o pipefail
+          cp bootstrap.sh "$RUNNER_TEMP/bootstrap.sh"
+          cd "$RUNNER_TEMP"
+          env DOTFILES_REPO_SLUG="$PR_REPO" DOTFILES_REF="$PR_REF" \
+            PROFILE=minimal DOTFILES_CONFLICT=overwrite CLEANUP=skip \
+            GIT_NAME='CI Bot' GIT_EMAIL=ci@example.com \
+            bash "$RUNNER_TEMP/bootstrap.sh" 2>&1 | tee "$RUNNER_TEMP/bootstrap.log"
+
+      - name: assert tarball mode
+        run: bash test/ci/assert-log-mode.sh "$RUNNER_TEMP/bootstrap.log" tarball
+
+      - name: assert installed result
+        run: bash test/ci/assert-linux.sh "$GITHUB_WORKSPACE" minimal
+
+  smoke-developer:
+    name: smoke (developer profile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: bootstrap developer profile
+        run: |
+          set -o pipefail
+          env PROFILE=developer DOTFILES_CONFLICT=overwrite CLEANUP=skip \
+            GIT_NAME='CI Bot' GIT_EMAIL=ci@example.com \
+            bash bootstrap.sh 2>&1 | tee "$RUNNER_TEMP/bootstrap.log"
+
+      - name: assert local checkout mode
+        run: bash test/ci/assert-log-mode.sh "$RUNNER_TEMP/bootstrap.log" local
+
+      - name: assert installed result
+        run: bash test/ci/assert-linux.sh "$GITHUB_WORKSPACE" developer
+
+  smoke-macos:
+    name: smoke (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # Stock /bin/bash (3.2) end to end, as a user would run it.
+      - name: bootstrap minimal profile
+        run: |
+          env PROFILE=minimal DOTFILES_CONFLICT=overwrite CLEANUP=skip \
+            GIT_NAME='CI Bot' GIT_EMAIL=ci@example.com \
+            /bin/bash bootstrap.sh
+
+      - name: assert installed result
+        run: bash test/ci/assert-macos.sh "$GITHUB_WORKSPACE"
