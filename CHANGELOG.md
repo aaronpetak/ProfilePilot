@@ -4,6 +4,10 @@ All notable changes to ProfilePilot are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- Tarball mode can install from a private repository. When the anonymous download gets a 404, it retries once through the GitHub API with a token from `GH_TOKEN`, `GITHUB_TOKEN`, `gh auth token` or a hidden prompt. The token is passed to curl on stdin and never logged. Public repositories still download anonymously.
+
 ## [0.1.0] - 2026-11-05
 
 First tagged release.

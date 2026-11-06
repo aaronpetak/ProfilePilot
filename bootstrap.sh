@@ -16,10 +16,14 @@ BOOTSTRAP_SCRIPT="${BASH_SOURCE[0]:-}"
 # installs from that checkout. Otherwise (e.g. piped from curl) it downloads ONE
 # tarball of $DOTFILES_REF from $DOTFILES_REPO_SLUG, so every file comes from the
 # same snapshot. Set DOTFILES_REPO_SLUG to use a fork, DOTFILES_REF (branch, tag
-# or commit) to pin a version.
+# or commit) to pin a version. A private repository also needs a token: see
+# fetch_source_tarball and github_token (GH_TOKEN or GITHUB_TOKEN).
 DOTFILES_REPO_SLUG="${DOTFILES_REPO_SLUG:-aaronpetak/ProfilePilot}"
 DOTFILES_REF="${DOTFILES_REF:-main}"
 DOTFILES_TARBALL_URL="https://codeload.github.com/$DOTFILES_REPO_SLUG/tar.gz/$DOTFILES_REF"
+# The same snapshot through the GitHub API, which accepts a token. Used only
+# after the anonymous download above gets a 404, as it does for a private repo.
+DOTFILES_API_TARBALL_URL="https://api.github.com/repos/$DOTFILES_REPO_SLUG/tarball/$DOTFILES_REF"
 HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
 # Shell-specific base dotfiles, shared by every profile (they live directly under
@@ -252,8 +256,8 @@ to_lower() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
-# Show a menu on the terminal and read one answer from it. Every interactive
-# prompt goes through here. Callers must have checked tty_available first.
+# Show a menu on the terminal and read one answer from it. Every menu prompt
+# goes through here. Callers must have checked tty_available first.
 # Prints the answer lowercased (empty if the user just pressed enter).
 # Args: $1 - the read prompt, $2... - menu lines printed before the prompt
 ask_choice() {
@@ -266,6 +270,17 @@ ask_choice() {
     fi
     read -rp "$prompt" answer < /dev/tty
     to_lower "${answer:-}"
+}
+
+# Read one line from the terminal without echoing it, for secrets. Unlike
+# ask_choice the answer keeps its case. Callers must have checked tty_available.
+# Prints the answer (empty if the user just pressed enter or input ended).
+# Args: $1 - the read prompt
+ask_secret() {
+    local answer=""
+    read -rsp "$1" answer < /dev/tty || answer=""
+    echo >&2
+    printf '%s' "$answer"
 }
 
 # The distro's package manager: dnf, apt-get, pacman or zypper, in that order.
@@ -874,13 +889,59 @@ unpack_source_tarball() {
         fatal "The downloaded archive does not look like ProfilePilot (universal/brewfiles/Brewfile-minimal is missing). Check DOTFILES_REPO_SLUG and DOTFILES_REF."
 }
 
-# Download the single pinned tarball and unpack it.
+# Print a GitHub token for downloading a private repository. Sources, in order:
+# GH_TOKEN, GITHUB_TOKEN, `gh auth token` (when the GitHub CLI is installed and
+# logged in), then a hidden prompt when a terminal is available. Returns 1 when
+# none of them gives a token.
+github_token() {
+    local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+    if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+        token="$(gh auth token 2>/dev/null)" || token=""
+    fi
+    if [[ -z "$token" ]] && tty_available; then
+        reset_tty
+        token="$(ask_secret "  GitHub token that can read $DOTFILES_REPO_SLUG (input hidden, Enter to skip): ")"
+    fi
+    [[ -n "$token" ]] || return 1
+    printf '%s\n' "$token"
+}
+
+# Run curl with a GitHub token in an Authorization header. The header goes in on
+# stdin (-H @-) rather than as an argument, so the token never shows up in a
+# process listing. curl does not resend a custom Authorization header when it
+# follows a redirect to another host; GitHub's redirect to codeload carries its
+# own short-lived token instead.
+# Args: $1 - token, then the curl arguments
+curl_with_token() {
+    local token="$1"
+    shift
+    printf 'Authorization: Bearer %s\n' "$token" | curl -H @- "$@"
+}
+
+# Download the single pinned tarball and unpack it. The first request is
+# anonymous, so a public repository never needs a token. GitHub answers 404 to an
+# anonymous request for a private repository, so a 404 (and only a 404) is
+# retried once through the API with a token from github_token.
 # Args: $1 - destination directory
 fetch_source_tarball() {
-    local dest="$1" tarball="$WORKDIR/source.tar.gz"
+    local dest="$1" tarball="$WORKDIR/source.tar.gz" err="$WORKDIR/download.err" code token
     log "Downloading ProfilePilot ($DOTFILES_REPO_SLUG @ $DOTFILES_REF)..."
-    curl -fsSL "$DOTFILES_TARBALL_URL" -o "$tarball" ||
-        fatal "Failed to download $DOTFILES_TARBALL_URL"
+    code="$(curl -sSL -w '%{http_code}' -o "$tarball" "$DOTFILES_TARBALL_URL" 2>"$err")" ||
+        fatal "Failed to download $DOTFILES_TARBALL_URL: $(cat "$err" 2>/dev/null)"
+    case "$code" in
+        200) ;;
+        404)
+            log "No anonymous access to $DOTFILES_REPO_SLUG @ $DOTFILES_REF (HTTP 404). The repository may be private; retrying with a GitHub token."
+            token="$(github_token)" ||
+                fatal "Failed to download $DOTFILES_TARBALL_URL (HTTP 404). If $DOTFILES_REPO_SLUG is private, set GH_TOKEN to a GitHub token that can read it; otherwise check DOTFILES_REPO_SLUG and DOTFILES_REF."
+            curl_with_token "$token" -fsSL -o "$tarball" "$DOTFILES_API_TARBALL_URL" ||
+                fatal "Failed to download $DOTFILES_REPO_SLUG @ $DOTFILES_REF with the GitHub token. Check that the token can read the repository and that the ref exists."
+            log "Downloaded with a GitHub token."
+            ;;
+        *)
+            fatal "Failed to download $DOTFILES_TARBALL_URL (HTTP $code)."
+            ;;
+    esac
     unpack_source_tarball "$tarball" "$dest"
 }
 
