@@ -17,7 +17,7 @@ The script detects your OS, asks you to pick a profile (Developer or Minimal), a
 That command tracks `main`. To install a fixed [release](https://github.com/aaronpetak/ProfilePilot/releases) instead, download the script from the release tag and point it at the same tag. Without `DOTFILES_REF`, the downloaded script would still fetch its files from `main`:
 
 ```bash
-v=v0.1.0; f="$(mktemp)" && curl -fsSL "https://raw.githubusercontent.com/aaronpetak/ProfilePilot/$v/bootstrap.sh" -o "$f" && DOTFILES_REF="$v" bash "$f"
+v=v0.1.1; f="$(mktemp)" && curl -fsSL "https://raw.githubusercontent.com/aaronpetak/ProfilePilot/$v/bootstrap.sh" -o "$f" && DOTFILES_REF="$v" bash "$f"
 ```
 
 Piping the script (`curl -fsSL .../bootstrap.sh | bash`) also works. A piped script has no file next to it, so it takes the tarball path described below, and prompts still reach you through `/dev/tty`.
