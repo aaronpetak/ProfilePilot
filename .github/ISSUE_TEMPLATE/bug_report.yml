@@ -1,0 +1,69 @@
+name: Bug report
+description: bootstrap.sh failed, or a dotfile or package did not end up the way the README says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The log file has most of what is needed to diagnose a run:
+        `~/.local/state/profilepilot.log` on Linux, `~/Library/Logs/profilepilot.log` on macOS.
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      description: Include the architecture, and WSL if relevant.
+      placeholder: "Ubuntu 24.04 (x86_64, WSL2) / macOS 15.4 (Apple Silicon) / Fedora 41"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Profile
+      options:
+        - developer
+        - minimal
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How was bootstrap.sh run?
+      options:
+        - From a clone (bash bootstrap.sh inside the checkout)
+        - Downloaded or piped on its own (tarball mode)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ProfilePilot version
+      description: A release tag, or the branch and commit you ran (`git rev-parse --short HEAD` in a clone, or the value of `DOTFILES_REF`).
+      placeholder: "v0.1.0, or main@7ea4b2e"
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment variables set
+      description: Any of PROFILE, DOTFILES_CONFLICT, CLEANUP, DOTFILES_REF, and so on. Leave out GIT_NAME and GIT_EMAIL values.
+      placeholder: "PROFILE=minimal DOTFILES_CONFLICT=overwrite CLEANUP=skip"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The relevant part of the log, including the end-of-run summary. Check it for anything private (usernames, hostnames, emails) before posting.
+      render: shell

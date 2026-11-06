@@ -19,7 +19,7 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
@@ -51,7 +51,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: logic tests (Linux)
         if: runner.os == 'Linux'
@@ -80,7 +80,7 @@ jobs:
           - archlinux:latest
           - opensuse/tumbleweed
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: bootstrap in a bare container
         run: docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" bash /src/test/ci/container-smoke.sh
@@ -93,7 +93,7 @@ jobs:
       PR_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
       PR_REF: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: bootstrap developer profile
         run: |
@@ -142,7 +142,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Stock /bin/bash (3.2) end to end, as a user would run it.
       - name: bootstrap minimal profile
