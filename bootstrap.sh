@@ -467,13 +467,45 @@ repair_ca_certificates() {
         log "Note: brew postinstall ca-certificates did not complete; TLS through Homebrew may still fail."
 }
 
+# Verify one downloaded release file against a sha256 checksums file, using the
+# line "<sha256>  <file>" for that exact filename. Linux-only (sha256sum).
+# This protects against a corrupted or tampered download or mirror; it does not
+# protect against a compromised upstream release, because the checksums are
+# published alongside the artifacts.
+# Args: $1 - directory holding both files, $2 - the file to verify,
+#       $3 - checksums file name (default checksums.txt)
+verify_release_checksum() {
+    local dir="$1" file="$2" sums="${3:-checksums.txt}"
+    (
+        cd "$dir" || exit 1
+        grep " $file\$" "$sums" 2>/dev/null | sha256sum -c - >/dev/null 2>&1
+    )
+}
+
+# Print the release tag the GitHub "latest" redirect points at, e.g. v0.65.0.
+# The redirect target ends in /releases/tag/<tag>. Resolving the tag once keeps
+# the zip and checksums.txt from the same release even if a new one is published
+# mid-run. Returns 1 when no tag can be resolved.
+# Args: $1 - repository slug (e.g. terraform-linters/tflint)
+resolve_latest_release_tag() {
+    local url tag
+    url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$1/releases/latest") || return 1
+    tag="${url##*/}"
+    case "$url" in
+        */releases/tag/?*) echo "$tag" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Install tflint on Linux.
 # tflint is only published as a macOS cask in terraform-linters/tap, so on
 # Linux it cannot be installed via Homebrew. We download the official release
-# zip directly from GitHub (the same artifact the upstream install script uses)
-# and drop the binary into the Homebrew bin dir, which is already on PATH.
-# Note: we intentionally do NOT pipe the upstream install_linux.sh into bash —
-# it is unpinned and its maintainers have announced its removal on 2026-09-01.
+# zip directly from GitHub and verify it against the release's checksums.txt
+# before dropping the binary into the Homebrew bin dir, which is already on
+# PATH. We intentionally do NOT pipe the upstream install_linux.sh into bash:
+# it is unpinned and its maintainers have announced its removal.
+# Any failure is logged, skips the install, and marks the package step
+# incomplete so the end-of-run summary and exit status report it.
 install_tflint_linux() {
     if [[ "$OS_TYPE" != "linux" ]]; then
         return
@@ -491,20 +523,47 @@ install_tflint_linux() {
         *) log "Note: unsupported architecture $(uname -m) for tflint; skipping."; return ;;
     esac
 
-    local url="https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_${arch}.zip"
-    local dest_dir
-    dest_dir="$(brew --prefix 2>/dev/null)/bin" || { log "Note: could not determine the Homebrew prefix; skipping tflint."; return; }
-    local tmp_zip="$WORKDIR/tflint.zip"
+    local prefix dest_dir
+    prefix=$(find_brew_prefix) || { log "Note: could not determine the Homebrew prefix; skipping tflint."; STATUS_PACKAGES="incomplete"; return; }
+    dest_dir="$prefix/bin"
 
-    log "Installing tflint (linux_${arch}) from GitHub releases..."
-    if ! curl -fsSL -o "$tmp_zip" "$url"; then
-        log "Note: failed to download tflint from $url; skipping."
+    local tag
+    tag=$(resolve_latest_release_tag "terraform-linters/tflint") || {
+        log "Note: could not resolve the latest tflint release; skipping tflint."
+        STATUS_PACKAGES="incomplete"
+        return
+    }
+
+    local zip_name="tflint_linux_${arch}.zip"
+    local base_url="https://github.com/terraform-linters/tflint/releases/download/$tag"
+    local dl_dir="$WORKDIR/tflint-dl"
+    mkdir -p "$dl_dir"
+
+    log "Installing tflint $tag (linux_${arch}) from GitHub releases..."
+    if ! curl -fsSL -o "$dl_dir/$zip_name" "$base_url/$zip_name" ||
+       ! curl -fsSL -o "$dl_dir/checksums.txt" "$base_url/checksums.txt"; then
+        log "Note: failed to download tflint $tag or its checksums from $base_url; skipping tflint."
+        STATUS_PACKAGES="incomplete"
         return
     fi
 
-    unzip -o -q "$tmp_zip" -d "$WORKDIR/tflint" || { log "Note: failed to unzip tflint; skipping."; return; }
-    install -m 0755 "$WORKDIR/tflint/tflint" "$dest_dir/tflint" || { log "Note: failed to install tflint binary; skipping."; return; }
-    log "tflint installed to $dest_dir/tflint"
+    if ! verify_release_checksum "$dl_dir" "$zip_name"; then
+        log "Note: tflint checksum verification failed for $zip_name; not installing it."
+        STATUS_PACKAGES="incomplete"
+        return
+    fi
+
+    if ! unzip -o -q "$dl_dir/$zip_name" -d "$WORKDIR/tflint"; then
+        log "Note: failed to unzip tflint; skipping tflint."
+        STATUS_PACKAGES="incomplete"
+        return
+    fi
+    if ! install -m 0755 "$WORKDIR/tflint/tflint" "$dest_dir/tflint"; then
+        log "Note: failed to install the tflint binary; skipping tflint."
+        STATUS_PACKAGES="incomplete"
+        return
+    fi
+    log "tflint $tag installed to $dest_dir/tflint"
 }
 
 # Given the "still missing" report from `brew bundle check --verbose`, tell

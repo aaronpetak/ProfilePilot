@@ -463,6 +463,57 @@ check "every Brewfile tap declares trusted: true" \
     "$(grep -h '^tap ' "$SCRIPT_DIR"/../universal/brewfiles/Brewfile-* | grep -vc 'trusted: true')" "0"
 
 # ---------------------------------------------------------------------------
+# Release checksum verification (verify_release_checksum)
+# ---------------------------------------------------------------------------
+if command -v sha256sum >/dev/null 2>&1; then
+    checksum_probe() {
+        (
+            tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+            eval "$(extract_fn verify_release_checksum)"
+            printf 'payload' > "$tmp/tflint_linux_amd64.zip"
+            printf 'other' > "$tmp/tflint_linux_arm64.zip"
+            # shellcheck disable=SC2034  # used by the eval-ed snippet.
+            good="$(cd "$tmp" && sha256sum tflint_linux_amd64.zip)"
+            eval "$1"
+            verify_release_checksum "$tmp" tflint_linux_amd64.zip && echo ok || echo bad
+        )
+    }
+    check "verify_release_checksum accepts a matching checksum" \
+        "$(checksum_probe 'printf "%s\n" "$good" > "$tmp/checksums.txt"')" "ok"
+    check "verify_release_checksum accepts it among other lines" \
+        "$(checksum_probe 'printf "%s\n%s\n" "0000  tflint_linux_arm64.zip" "$good" > "$tmp/checksums.txt"')" "ok"
+    check "verify_release_checksum rejects a corrupted file" \
+        "$(checksum_probe 'printf "%s\n" "$good" > "$tmp/checksums.txt"; printf corrupt > "$tmp/tflint_linux_amd64.zip"')" "bad"
+    check "verify_release_checksum rejects a missing checksum line" \
+        "$(checksum_probe 'printf "%s\n" "${good%% *}  tflint_linux_arm64.zip" > "$tmp/checksums.txt"')" "bad"
+    check "verify_release_checksum rejects a missing checksums file" \
+        "$(checksum_probe ':')" "bad"
+    check "verify_release_checksum does not match a longer filename suffix" \
+        "$(checksum_probe 'printf "%s\n" "${good%% *}  xtflint_linux_amd64.zip" > "$tmp/checksums.txt"')" "bad"
+fi
+
+# resolve_latest_release_tag with a stub curl that prints a fixed effective URL.
+tag_probe() {
+    (
+        eval "$(extract_fn resolve_latest_release_tag)"
+        curl() { printf '%s' "$1"; }
+        eval "$2"
+        resolve_latest_release_tag terraform-linters/tflint && true
+        echo "rc=$?"
+    )
+}
+check "resolve_latest_release_tag extracts the tag from the redirect target" \
+    "$(tag_probe '' 'curl() { printf "%s" "https://github.com/terraform-linters/tflint/releases/tag/v0.65.0"; }' | tr '\n' ' ')" "v0.65.0 rc=0 "
+check "resolve_latest_release_tag fails when the URL is not a tag page" \
+    "$(tag_probe '' 'curl() { printf "%s" "https://github.com/terraform-linters/tflint/releases"; }' | tr '\n' ' ')" "rc=1 "
+check "resolve_latest_release_tag fails when curl fails" \
+    "$(tag_probe '' 'curl() { return 22; }' | tr '\n' ' ')" "rc=1 "
+
+check "tflint download uses a resolved tag, not releases/latest/download" \
+    "$(grep -c 'releases/latest/download' "$BOOTSTRAP")" "0"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
