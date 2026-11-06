@@ -986,7 +986,7 @@ for sh in bash zsh; do
         "$(aliases_probe "$sh" 'tf_init; echo "rc=$?"; ls | wc -l | tr -d " "' | tr '\n' ' ')" \
         "tf_init: terraform not found on PATH. rc=1 0 "
     check "$sh: tf_init with terraform creates the standard files" \
-        "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; tf_init >/dev/null; ls | tr "\n" " "')" \
+        "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; tf_init >/dev/null; LC_ALL=C ls | tr "\n" " "')" \
         "README.md backend.tf locals.tf main.tf outputs.tf providers.tf terraform.tf variables.tf "
     check "$sh: tf_init creates a README skeleton when absent" \
         "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; tf_init >/dev/null; head -n1 README.md')" "# work"
