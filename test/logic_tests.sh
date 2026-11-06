@@ -971,6 +971,54 @@ for sh in bash zsh; do
         "mine 8 "
 done
 
+# get: pulls origin's default branch (needs git; real PATH, temp HOME and config)
+# Builds a bare origin whose default branch is "trunk" with one commit, plus
+# three working repos: a clone (origin/HEAD set), an init + remote add + fetch
+# repo (no origin/HEAD), and one with no origin. A second commit is then added
+# to the origin. Runs $2 in $1's shell inside the repo named by $3
+# (clone|nohead|noorigin) and prints its output with temp paths masked.
+get_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        export HOME="$tmp/home" GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1
+        export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+        mkdir -p "$HOME"
+        git init -q --bare -b trunk "$tmp/origin.git"
+        git init -q -b trunk "$tmp/seed"
+        git -C "$tmp/seed" remote add origin "$tmp/origin.git"
+        echo 1 > "$tmp/seed/f"; git -C "$tmp/seed" add f; git -C "$tmp/seed" commit -q -m one
+        git -C "$tmp/seed" push -q origin trunk
+        git clone -q "$tmp/origin.git" "$tmp/clone"
+        git init -q -b trunk "$tmp/noorigin"
+        git init -q -b trunk "$tmp/nohead"
+        git -C "$tmp/nohead" remote add origin "$tmp/origin.git"
+        git -C "$tmp/nohead" fetch -q origin
+        echo 2 > "$tmp/seed/f"; git -C "$tmp/seed" commit -q -am two
+        git -C "$tmp/seed" push -q origin trunk
+        cd "$tmp/$3" || exit 1
+        ALIASES="$ALIASES" "$(command -v "$1")" -c ". \"\$ALIASES\"; $2" 2>&1 | sed "s#$tmp#TMP#g"
+    )
+}
+for sh in bash zsh; do
+    command -v "$sh" >/dev/null 2>&1 || continue
+    check "$sh: get in a clone pulls the default branch" \
+        "$(get_probe "$sh" 'get >/dev/null 2>&1; echo "rc=$?"; git log --format=%s | tr "\n" ","' clone)" \
+        "rc=0
+two,one,"
+    check "$sh: get without origin/HEAD asks the remote and pulls" \
+        "$(get_probe "$sh" 'get >/dev/null 2>&1; echo "rc=$?"; git symbolic-ref --short refs/remotes/origin/HEAD; git log --format=%s | tr "\n" ","' nohead)" \
+        "rc=0
+origin/trunk
+two,one,"
+    check "$sh: get with no origin prints an error and fails" \
+        "$(get_probe "$sh" 'get; echo "rc=$?"' noorigin)" \
+        "get: cannot determine origin's default branch (is there an origin remote?).
+rc=1"
+    check "$sh: get replaces an older alias of the same name" \
+        "$(aliases_probe "$sh" 'alias get="echo shadow"; . "$ALIASES"; alias get 2>/dev/null | wc -l | tr -d " "; type get | head -n1 | grep -c function' | tr '\n' ' ')" "0 1 "
+done
+
 # ---------------------------------------------------------------------------
 # Arch: one full-upgrade transaction, failure is fatal
 # ---------------------------------------------------------------------------
