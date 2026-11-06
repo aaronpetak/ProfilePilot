@@ -115,6 +115,12 @@ RUN_TS="$(date +%Y%m%d-%H%M%S)"
 STATUS_PACKAGES="unknown"   # ok | incomplete
 STATUS_DOTFILES="unknown"   # applied | kept | not-found
 STATUS_GITCONFIG="unknown"  # personalized | already | incomplete | absent
+STATUS_CLEANUP="unknown"    # none | kept | removed | failed | unreadable
+
+# The brew executable whose shellenv this run had to add to its own PATH (set by
+# setup_brew_path). Non-empty means the shell that started the run cannot run
+# brew yet, so the summary says how to fix that.
+BREW_ADDED_TO_PATH=""
 
 # How to handle an existing dotfile that differs from the profile version:
 #   overwrite - back it up, then install the profile version
@@ -349,8 +355,10 @@ setup_brew_path() {
         fi
     fi
 
-    # Update PATH in the current session so brew works immediately
+    # Update PATH in the current session so brew works immediately. Only this
+    # process sees it; the caller's shell does not (see print_summary).
     eval "$shellenv_cmd"
+    BREW_ADDED_TO_PATH="$brew_path"
 }
 
 # macOS: make sure ~/.zprofile evaluates brew shellenv. The profile's
@@ -1381,10 +1389,28 @@ print_summary() {
         *)            log "  Gitconfig: not attempted." ;;
     esac
 
+    # Leftover packages do not stop the machine from working, so no cleanup
+    # outcome fails the run.
+    case "$STATUS_CLEANUP" in
+        none)       log "  Cleanup:   nothing to remove." ;;
+        kept)       log "  Cleanup:   kept packages not in $BREWFILE (set CLEANUP=remove to uninstall them)." ;;
+        removed)    log "  Cleanup:   removed packages not in $BREWFILE." ;;
+        failed)     log "  Cleanup:   some removals failed; see the log above." ;;
+        unreadable) log "  Cleanup:   skipped; Homebrew's cleanup preview could not be read (see the log above)." ;;
+        *)          log "  Cleanup:   not attempted." ;;
+    esac
+
     if [[ "$rc" -eq 0 ]]; then
         log "Environment restored successfully."
     else
         log "Environment restored with errors; see the summary above."
+    fi
+
+    # setup_brew_path only changed this process's PATH. The shell that started
+    # the run still has no brew until it reads the updated startup files.
+    if [[ -n "$BREW_ADDED_TO_PATH" ]]; then
+        log "brew is not on this terminal's PATH yet. Open a new terminal, or run:"
+        log "  eval \"\$($BREW_ADDED_TO_PATH shellenv)\""
     fi
     return "$rc"
 }
@@ -1485,10 +1511,63 @@ resolve_source() {
     [[ -f "$BREWFILE_PATH" ]] || fatal "Brewfile not found: $BREWFILE_PATH"
 }
 
+# True when the Brewfile $1 has a `brew "<name>"` entry for formula $2.
+brewfile_lists_formula() {
+    grep -Eq "^[[:space:]]*brew[[:space:]]+\"$2\"" "$1"
+}
+
+# Finish package moves that an earlier ProfilePilot install left half done,
+# before brew bundle runs. brew bundle cannot finish either of them itself:
+#
+#   tldr -> tlrc: homebrew-core removed the tldr formula, and tlrc installs the
+#     same bin/tldr. An old tldr keg still owns that link, so tlrc fails to link
+#     on every run and the package step ends FAILED. The old keg is only
+#     unlinked, which is reversible; cleanup then lists it like any other
+#     package that is not in the Brewfile.
+#
+#   oh-my-posh: it used to come from the jandedobbeleer/oh-my-posh tap and now
+#     comes from homebrew-core. brew bundle accepts the tap's keg because the
+#     name matches, so it is never replaced, and the tap's formula is no longer
+#     trusted, so it is never upgraded. While that keg is installed, cleanup
+#     cannot untap the tap either. The core bottle is downloaded first, so a
+#     failed download leaves the working copy in place.
+#
+# Each move is skipped unless the Brewfile wants the replacement. A failure is
+# logged and the run continues; brew bundle reports whatever is still missing.
+# Args: $1 - full path to the Brewfile
+migrate_superseded_packages() {
+    local brewfile="$1" installed
+
+    # Captured rather than piped into `grep -q`: under pipefail, grep exiting at
+    # the first match can kill brew with SIGPIPE and fail the whole test.
+    installed=$(brew list --formula --full-name 2>/dev/null) || installed=""
+
+    if brewfile_lists_formula "$brewfile" tlrc &&
+        grep -Eqx '([^/]+/[^/]+/)?tldr' <<< "$installed"; then
+        log "Unlinking the old tldr formula (removed from Homebrew) so tlrc can provide the tldr command..."
+        brew unlink tldr >/dev/null 2>&1 ||
+            log "Warning: could not unlink tldr; tlrc may fail to link. Run: brew unlink tldr"
+    fi
+
+    if brewfile_lists_formula "$brewfile" oh-my-posh &&
+        grep -qx 'jandedobbeleer/oh-my-posh/oh-my-posh' <<< "$installed"; then
+        log "Moving oh-my-posh from the jandedobbeleer/oh-my-posh tap to homebrew-core..."
+        if ! brew fetch --formula homebrew/core/oh-my-posh >/dev/null 2>&1; then
+            log "Warning: could not download oh-my-posh from homebrew-core; keeping the tap's copy for now."
+        elif brew uninstall --formula oh-my-posh && brew install --formula homebrew/core/oh-my-posh; then
+            log "oh-my-posh now comes from homebrew-core."
+        else
+            log "Warning: moving oh-my-posh to homebrew-core did not finish; brew bundle will install it next."
+        fi
+    fi
+}
+
 # Update Homebrew and install the selected Brewfile's packages.
 install_packages() {
     log "Updating Homebrew..."
     brew update || log "Warning: brew update failed; continuing with the package index already on this machine."
+
+    migrate_superseded_packages "$BREWFILE_PATH"
 
     # Retries transient failures and continues past any that persist (see
     # install_brewfile_packages), so dotfiles, tflint and cleanup still happen.
@@ -1519,31 +1598,119 @@ apply_profile() {
     personalize_gitconfig
 }
 
-# Offer to uninstall packages that are installed but not in the Brewfile.
-# `brew bundle cleanup` without --force only previews, so use it to show the
-# candidates; an empty preview means there is nothing to clean up.
-cleanup_packages() {
-    local preview line
-    log "Checking for packages not listed in $BREWFILE..."
-    preview=$(brew bundle cleanup --file="$BREWFILE_PATH" 2>&1) || true
+# Log each non-empty line of $1, indented.
+log_lines() {
+    local line
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            log "  $line"
+        fi
+    done <<< "$1"
+    return 0
+}
 
-    if [[ -z "$preview" ]]; then
+# Run `brew bundle cleanup` for the selected Brewfile, limited to Homebrew
+# formulae, casks and taps. Without the type flags it also covers every bundle
+# extension (npm, go, cargo, uv, VS Code, krew, flatpak, Mac App Store), so a
+# forced run would also uninstall, for example, global npm packages that the
+# Brewfile never mentions.
+brew_bundle_cleanup() {
+    brew bundle cleanup --file="$BREWFILE_PATH" --formula --cask --tap "$@"
+}
+
+# Print what a `brew bundle cleanup` preview (its stdout) would remove, one
+# "<kind> <name>" line each, where kind is formula, cask or tap. Only those three
+# sections are read. Any other section is skipped (for example "Would `brew
+# cleanup`:", whose lines are cache files), as is the closing "Run `brew bundle
+# cleanup --force`" hint. Returns 1 if a line inside one of the three sections
+# is not a plausible package name: the preview is then not understood, and
+# nothing should be removed on the strength of it.
+# Args: $1 - the preview's stdout
+parse_cleanup_preview() {
+    local line kind="" word
+    local -a words
+    local name_re='^[A-Za-z0-9@][A-Za-z0-9@+._/-]*$'
+    while IFS= read -r line; do
+        case "$line" in
+            "Would uninstall formulae:") kind="formula"; continue ;;
+            "Would uninstall casks:")    kind="cask"; continue ;;
+            "Would untap:")              kind="tap"; continue ;;
+            "Would "*":"|'Run `brew bundle cleanup'*) kind=""; continue ;;
+        esac
+        [[ -n "$kind" && "$line" =~ [^[:space:]] ]] || continue
+        # Homebrew prints one name per line when stdout is not a terminal, and
+        # columns when it is; splitting on whitespace reads both.
+        read -r -a words <<< "$line"
+        for word in "${words[@]}"; do
+            [[ "$word" =~ $name_re ]] || return 1
+            echo "$kind $word"
+        done
+    done <<< "$1"
+    return 0
+}
+
+# Offer to uninstall packages that are installed but not in the Brewfile, and
+# record the outcome in STATUS_CLEANUP.
+#
+# The preview (no --force) changes nothing. It exits 1 whenever it lists
+# something, so its status alone is not an error. Only its stdout is parsed:
+# stderr carries progress lines and warnings, which must never be presented as
+# packages to remove. If the preview cannot be read, nothing is removed.
+#
+# The removal re-runs `brew bundle cleanup`, which recomputes the same list and
+# keeps Homebrew's own safeguards (it never removes a dependency of something in
+# the Brewfile). Its failure is reported, never fatal, so the summary prints.
+cleanup_packages() {
+    local preview preview_rc=0 candidates kind name
+    local err_file="$WORKDIR/cleanup-preview.err"
+    log "Checking for packages not listed in $BREWFILE..."
+    preview=$(brew_bundle_cleanup 2>"$err_file") || preview_rc=$?
+
+    if ! candidates=$(parse_cleanup_preview "$preview"); then
+        log "Could not read Homebrew's cleanup preview, so nothing will be removed. It printed:"
+        log_lines "$preview"
+        STATUS_CLEANUP="unreadable"
+        return 0
+    fi
+
+    if [[ -z "$candidates" ]]; then
+        if [[ "$preview_rc" -ne 0 ]]; then
+            # A failure with nothing listed is a Homebrew error, for example a
+            # Brewfile entry it cannot resolve.
+            log "Homebrew could not work out what to clean up, so nothing will be removed. It reported:"
+            log_lines "$(cat "$err_file" 2>/dev/null)"
+            STATUS_CLEANUP="unreadable"
+            return 0
+        fi
         log "Nothing to clean up; every installed package is part of $BREWFILE."
+        STATUS_CLEANUP="none"
         return 0
     fi
 
     log "The following are installed but not listed in $BREWFILE:"
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && log "  $line"
-    done <<< "$preview"
+    while read -r kind name; do
+        log "  $kind: $name"
+    done <<< "$candidates"
 
     determine_cleanup_mode
-    if [[ "$CLEANUP_MODE" == "remove" ]]; then
-        log "Removing packages not listed in $BREWFILE..."
-        brew bundle cleanup --file="$BREWFILE_PATH" --force
-        log "Cleanup complete."
-    else
+    if [[ "$CLEANUP_MODE" != "remove" ]]; then
         log "Keeping all installed packages; nothing was removed. (Set CLEANUP=remove to uninstall packages not in the profile.)"
+        STATUS_CLEANUP="kept"
+        return 0
+    fi
+
+    log "Removing packages not listed in $BREWFILE..."
+    # stdin is /dev/null so Homebrew cannot stop to ask a second question: the
+    # list above is what was approved. In particular `brew untap` would
+    # otherwise offer to uninstall formulae that a removed tap still provides,
+    # which were never shown. Without a terminal it refuses instead, and that
+    # failure is reported below.
+    if brew_bundle_cleanup --force </dev/null; then
+        log "Cleanup complete."
+        STATUS_CLEANUP="removed"
+    else
+        log "Warning: Homebrew could not remove everything listed above; see its messages."
+        STATUS_CLEANUP="failed"
     fi
 }
 
