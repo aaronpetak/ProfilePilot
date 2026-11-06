@@ -168,18 +168,24 @@ git_prompt_probe() {
         grep -v 'job control\|process group' "$tmp/err" | sed "s#$tmp#TMP#g"
     )
 }
-check "fallback prompt without git-prompt: plain PS1, no __git_ps1, no errors" \
-    "$(git_prompt_probe ':' | head -n1)" '\u@\h:\w\$ '
-check "fallback prompt without git-prompt: nothing on stderr" \
-    "$(git_prompt_probe ':' | tail -n +3)" ""
-check "fallback prompt with git-prompt: __git_ps1 evaluated per prompt (single-quoted)" \
-    "$(git_prompt_probe 'mkdir -p "$tmp/usr/share/git-core/contrib/completion"
-        echo "__git_ps1() { printf \" (%s)\" main; }" > "$tmp/usr/share/git-core/contrib/completion/git-prompt.sh"' | head -n1)" \
-    '\u@\h:\w$(__git_ps1 " (%s)")\$ '
-check "fallback prompt with git-prompt: the helper's output appears in the rendered prompt" \
-    "$(git_prompt_probe 'mkdir -p "$tmp/usr/share/git-core/contrib/completion"
-        echo "__git_ps1() { printf \" (%s)\" main; }" > "$tmp/usr/share/git-core/contrib/completion/git-prompt.sh"' | sed -n 2p | sed 's/^[^ ]* //')" \
-    "(main)$ "
+# The probe renders PS1 with ${PS1@P} (bash 4.4+) in the bash found on PATH,
+# which is the interpreter it spawns, so the guard asks that same bash.
+if bash -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))' 2>/dev/null; then
+    check "fallback prompt without git-prompt: plain PS1, no __git_ps1, no errors" \
+        "$(git_prompt_probe ':' | head -n1)" '\u@\h:\w\$ '
+    check "fallback prompt without git-prompt: nothing on stderr" \
+        "$(git_prompt_probe ':' | tail -n +3)" ""
+    check "fallback prompt with git-prompt: __git_ps1 evaluated per prompt (single-quoted)" \
+        "$(git_prompt_probe 'mkdir -p "$tmp/usr/share/git-core/contrib/completion"
+            echo "__git_ps1() { printf \" (%s)\" main; }" > "$tmp/usr/share/git-core/contrib/completion/git-prompt.sh"' | head -n1)" \
+        '\u@\h:\w$(__git_ps1 " (%s)")\$ '
+    check "fallback prompt with git-prompt: the helper's output appears in the rendered prompt" \
+        "$(git_prompt_probe 'mkdir -p "$tmp/usr/share/git-core/contrib/completion"
+            echo "__git_ps1() { printf \" (%s)\" main; }" > "$tmp/usr/share/git-core/contrib/completion/git-prompt.sh"' | sed -n 2p | sed 's/^[^ ]* //')" \
+        "(main)$ "
+else
+    echo "SKIP: fallback prompt rendering checks need bash 4.4+ (PATH bash is older)"
+fi
 check "add-on no longer references __git_ps1" "$(grep -c '__git_ps1' "$DEV_ADDON")" "0"
 
 # Behavioral: run the .bashrc detection loop with its candidates redirected to a
