@@ -359,6 +359,58 @@ check "warn_stale_brew_lines is silent when the brew exists" \
     ""
 
 # ---------------------------------------------------------------------------
+# Source resolution: local checkout vs. one pinned tarball
+# ---------------------------------------------------------------------------
+# Facts the design relies on: BASH_SOURCE[0] is empty when the script is piped
+# in, and must be read with a default so `set -u` does not abort.
+check "piped script sees an empty BASH_SOURCE[0] (set -u safe)" \
+    "$(printf 'set -u\necho "[${BASH_SOURCE[0]:-}]"\n' | bash)" "[]"
+
+lc_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        eval "$(extract_fn local_checkout_dir)"
+        eval "$1" | sed "s#$tmp#TMP#g"
+        echo "rc=${PIPESTATUS[0]}"
+    )
+}
+
+check "local_checkout_dir: empty script path -> tarball mode" \
+    "$(lc_probe 'local_checkout_dir ""' | tr '\n' ' ')" "rc=1 "
+check "local_checkout_dir: script path /dev/fd/63 (bash <(curl)) -> tarball mode" \
+    "$(lc_probe 'local_checkout_dir /dev/fd/63' | tr '\n' ' ')" "rc=1 "
+check "local_checkout_dir: dir without universal/brewfiles -> tarball mode" \
+    "$(lc_probe 'mkdir -p "$tmp/x"; local_checkout_dir "$tmp/x/bootstrap.sh"' | tr '\n' ' ')" "rc=1 "
+check "local_checkout_dir: clone with universal/brewfiles -> local mode" \
+    "$(lc_probe 'mkdir -p "$tmp/clone/universal/brewfiles"; local_checkout_dir "$tmp/clone/bootstrap.sh"' | tr '\n' ' ')" "TMP/clone rc=0 "
+check "local_checkout_dir: the real repo is recognised as a checkout" \
+    "$( (eval "$(extract_fn local_checkout_dir)"; local_checkout_dir "$BOOTSTRAP" >/dev/null && echo local) )" "local"
+
+# unpack_source_tarball: build a codeload-style tarball (single top-level dir
+# with an unpredictable name) and unpack it without knowing that name.
+tarball_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        log() { :; }
+        fatal() { echo "FATAL"; exit 1; }
+        eval "$(extract_fn unpack_source_tarball)"
+        mkdir -p "$tmp/src/ProfilePilot-abc123/universal/brewfiles"
+        eval "$1"
+        unpack_source_tarball "$tmp/t.tar.gz" "$tmp/out" 2>/dev/null
+        test -f "$tmp/out/universal/brewfiles/Brewfile-minimal" && echo extracted
+    )
+}
+
+check "unpack_source_tarball strips the top-level dir and finds the sentinel" \
+    "$(tarball_probe 'touch "$tmp/src/ProfilePilot-abc123/universal/brewfiles/Brewfile-minimal"; tar -czf "$tmp/t.tar.gz" -C "$tmp/src" ProfilePilot-abc123' | tr '\n' ' ')" "extracted "
+check "unpack_source_tarball is fatal when the sentinel is missing" \
+    "$(tarball_probe 'tar -czf "$tmp/t.tar.gz" -C "$tmp/src" ProfilePilot-abc123' | tr '\n' ' ')" "FATAL "
+check "unpack_source_tarball is fatal on a corrupt archive" \
+    "$(tarball_probe 'echo not-a-tarball > "$tmp/t.tar.gz"' | tr '\n' ' ')" "FATAL "
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "-----"
