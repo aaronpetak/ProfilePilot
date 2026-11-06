@@ -946,6 +946,11 @@ for sh in bash zsh; do
     check "$sh: tf_init with terraform creates the standard files" \
         "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; tf_init >/dev/null; ls | tr "\n" " "')" \
         "README.md backend.tf locals.tf main.tf outputs.tf providers.tf terraform.tf variables.tf "
+    check "$sh: tf_init creates a README skeleton when absent" \
+        "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; tf_init >/dev/null; head -n1 README.md')" "# work"
+    check "$sh: tf_init never overwrites an existing README" \
+        "$(aliases_probe "$sh" 'printf "#!/bin/sh\n" > "$TMP/bin/terraform"; chmod +x "$TMP/bin/terraform"; echo mine > README.md; tf_init >/dev/null; cat README.md; ls | wc -l | tr -d " "' | tr '\n' ' ')" \
+        "mine 8 "
 done
 
 # ---------------------------------------------------------------------------
