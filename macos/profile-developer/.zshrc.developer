@@ -35,13 +35,3 @@ fi
 if command -v fzf >/dev/null 2>&1; then
     source <(fzf --zsh)
 fi
-
-
-###############################################################################
-# Default Terminal Editor Configuration
-###############################################################################
-# Set Visual Studio Code as the system editor.
-# --wait ensures commands (git commit, crontab -e, etc.) pause correctly.
-export EDITOR="code --wait"
-export VISUAL="$EDITOR"
-
