@@ -1,7 +1,8 @@
-[user]
-    name = {FULL NAME}
-    email = {GITHUB EMAIL}
-    username = {GITHUB USERNAME}
+# Personal identity (user.name / user.email) is written by bootstrap.sh to
+# ~/.gitconfig.local. This include must stay at the TOP so the per-directory
+# identities below, which come later, override it.
+[include]
+    path = ~/.gitconfig.local
 
 [includeIf "gitdir:~/projects/github/"]
     path = ~/projects/github/.gitconfig
