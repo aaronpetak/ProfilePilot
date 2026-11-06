@@ -4,6 +4,18 @@ All notable changes to ProfilePilot are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- Cleanup no longer touches global npm, go, cargo and uv packages, VS Code extensions or other bundle extensions. Before, choosing "Remove" uninstalled any of them that the Brewfile did not list.
+- The cleanup list no longer shows Homebrew progress messages and warnings as packages to remove. A preview that cannot be read now removes nothing.
+- A failed cleanup no longer stops the run before the summary, and removing a tap no longer asks a second question about packages that were not on the list.
+- Machines with the old `tldr` package no longer end every developer-profile run as FAILED: `tldr` is unlinked so `tlrc` can provide the `tldr` command.
+- oh-my-posh installed from the old `jandedobbeleer/oh-my-posh` tap is replaced with homebrew-core's. Before, it was never upgraded, and cleanup could not remove the tap.
+
+### Added
+
+- The summary reports the cleanup outcome, and says how to get `brew` in your current terminal when the run had to add it to `PATH`.
+
 ## [0.1.0] - 2026-11-05
 
 First tagged release.

@@ -135,11 +135,11 @@ Both profiles also get `~/.shell_aliases`, `~/.gitconfig` and `~/.gitmessage`.
 2. **Profile selection.** `PROFILE`, or the menu.
 3. **Source resolution.** Local checkout or one tarball (see above).
 4. **Homebrew.** If `brew` is not on `PATH`, the known prefixes are checked first, so an existing install is wired up instead of reinstalled. Otherwise the official installer is downloaded to a file and run; a failed download stops the run. On Linux it makes sure `git`, `curl`, `tar` and `gzip` exist before running the installer, and afterwards installs `unzip`, `bubblewrap`, `gawk` and a compiler toolchain through the distro package manager (on Arch this is a full `pacman -Syu`; on apt systems `apt-get update` runs once before the first install).
-5. **Packages.** `brew update` (a failure is only a warning), then `brew bundle` on the profile's Brewfile with retries. Packages that still fail are reported and the run continues, but the exit status is non-zero.
+5. **Packages.** `brew update` (a failure is only a warning), then the package moves described under [Migrating an Existing Install](#migrating-an-existing-install), then `brew bundle` on the profile's Brewfile with retries. Packages that still fail are reported and the run continues, but the exit status is non-zero.
 6. **Dotfiles.** Applied to `$HOME` as described below.
 7. **Git identity.** Written to `~/.gitconfig.local`.
-8. **Cleanup.** Offers to remove installed packages that are not in the Brewfile.
-9. **Summary.** Reports packages, dotfiles and git identity separately.
+8. **Cleanup.** Offers to remove installed Homebrew packages that are not in the Brewfile.
+9. **Summary.** Reports packages, dotfiles, git identity and cleanup separately. If the run had to put `brew` on its own `PATH`, it also says how to get `brew` in your current terminal.
 
 ### Homebrew prefix detection
 
@@ -169,7 +169,11 @@ On a terminal you are asked once: `[O]` overwrite all, `[S]` skip all, or `[D]` 
 
 ### Package cleanup
 
-After installing, the script lists packages that are installed but not in the selected Brewfile and asks whether to remove them (`[R]`) or keep them (`[K]`). Removal is done by `brew bundle cleanup`, so packages still required by something in the Brewfile stay. It cannot be undone. Without a terminal, `CLEANUP` decides, and unset means keep.
+After installing, the script lists Homebrew formulae, casks and taps that are installed but not in the selected Brewfile, and asks whether to remove them (`[R]`) or keep them (`[K]`). Removal is done by `brew bundle cleanup --formula --cask --tap`, so packages still required by something in the Brewfile stay. It cannot be undone. Without a terminal, `CLEANUP` decides, and unset means keep.
+
+Only those three kinds are touched. `brew bundle cleanup` on its own would also remove global npm, go, cargo and uv packages, VS Code extensions and other bundle extensions that the Brewfile does not list; the script never does.
+
+The list comes from a preview that changes nothing. Homebrew's progress messages and warnings are never shown as packages; they are printed only when Homebrew fails to produce the list. If the preview cannot be read, or Homebrew fails to produce it, nothing is removed. If a removal fails, the run continues and the summary reports it. Removing a tap never prompts again to uninstall packages from it that were not on the list.
 
 ### Git identity
 
@@ -210,6 +214,8 @@ Re-running is safe. Identical dotfiles are left alone, shell startup lines are a
 - **Stale `shellenv` lines.** A `~/.profile` or `~/.bash_profile` line that runs `shellenv` for a `brew` that does not exist is reported, not edited. Remove or fix it yourself.
 - **`includeIf` directory.** Per-directory git identities now apply under `~/projects/gh/` (previously `~/projects/github/`).
 - **Log name.** The log is `profilepilot.log` (previously `homebrew-restore.log`).
+- **`tldr` replaced by `tlrc`.** Homebrew removed the `tldr` formula; the developer profile now installs `tlrc`, which provides the same `tldr` command. An old `tldr` package is unlinked (not removed) so `tlrc` can take over the command. Cleanup then offers to remove it.
+- **oh-my-posh from homebrew-core.** oh-my-posh used to come from the `jandedobbeleer/oh-my-posh` tap. If that copy is installed, the developer profile replaces it with homebrew-core's. The new version is downloaded first, so a failed download leaves your current prompt working. Cleanup then offers to remove the old tap.
 
 ## Testing and CI
 

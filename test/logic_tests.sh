@@ -97,6 +97,32 @@ check "summary not-found/absent -> 0" "$(summary_rc ok not-found absent)"       
 check "summary all unknown -> 0"     "$(summary_rc unknown unknown unknown)"      "0"
 check "summary pkg fail dominates"   "$(summary_rc incomplete kept incomplete)"   "1"
 
+# $1 = STATUS_CLEANUP, $2 = BREW_ADDED_TO_PATH. Prints the Cleanup line, any
+# PATH hint lines, and the exit status.
+summary_cleanup() {
+    (
+        log() { echo "$*"; }
+        STATUS_PACKAGES=ok STATUS_DOTFILES=applied STATUS_GITCONFIG=already
+        BREWFILE=Brewfile-minimal
+        STATUS_CLEANUP="$1"
+        BREW_ADDED_TO_PATH="$2"
+        out=$(print_summary); rc=$?
+        printf '%s\n' "$out" | grep -E 'Cleanup:|PATH|shellenv' | sed 's/^ *//' | tr '\n' '|'
+        echo "rc=$rc"
+    )
+}
+check "summary: a failed cleanup is reported but does not fail the run" \
+    "$(summary_cleanup failed '')" "Cleanup:   some removals failed; see the log above.|rc=0"
+check "summary: an unreadable cleanup preview does not fail the run" \
+    "$(summary_cleanup unreadable '' | cut -d'|' -f2)" "rc=0"
+check "summary: cleanup not run reads 'not attempted'" \
+    "$(summary_cleanup unknown '')" "Cleanup:   not attempted.|rc=0"
+check "summary: no PATH hint when brew was already on the caller's PATH" \
+    "$(summary_cleanup none '' | grep -c shellenv)" "0"
+check "summary: a run that added brew to PATH says how to get it in this terminal" \
+    "$(summary_cleanup none /home/linuxbrew/.linuxbrew/bin/brew | cut -d'|' -f2-)" \
+    "brew is not on this terminal's PATH yet. Open a new terminal, or run:|eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"|rc=0"
+
 # ---------------------------------------------------------------------------
 # Linux developer prompt wiring  (oh-my-posh + PROMPT_COMMAND)
 #
@@ -790,6 +816,7 @@ packages_probe() {
         BREWFILE_PATH="/x/$1"
         calls=""
         brew() { calls="$calls brew:$1"; [[ "$1" != "update" ]] || return 1; }
+        migrate_superseded_packages() { calls="$calls migrate"; }
         install_brewfile_packages() { calls="$calls bundle"; }
         install_tflint_linux() { calls="$calls tflint"; }
         log() { case "$*" in *"brew update failed"*) calls="$calls warned";; esac; }
@@ -798,38 +825,133 @@ packages_probe() {
     )
 }
 check "install_packages: a failed brew update warns and continues (developer)" \
-    "$(packages_probe Brewfile-developer)" " brew:update warned bundle tflint"
+    "$(packages_probe Brewfile-developer)" " brew:update warned migrate bundle tflint"
 check "install_packages: tflint is only for the developer profile" \
-    "$(packages_probe Brewfile-minimal)" " brew:update warned bundle"
+    "$(packages_probe Brewfile-minimal)" " brew:update warned migrate bundle"
 
-cleanup_probe() {
-    # $1 = CLEANUP value, $2 = preview text brew prints. brew runs inside a
-    # command substitution for the preview, so calls are recorded in a file.
+# ---------------------------------------------------------------------------
+# migrate_superseded_packages (old tldr keg, oh-my-posh from the old tap)
+# ---------------------------------------------------------------------------
+# $1 = Brewfile lines (\n-separated), $2 = `brew list --formula --full-name`
+# output, $3 = space-separated brew subcommands that fail. Prints the brew calls
+# (other than the listing) and "returned", run under set -e to prove no failure
+# aborts the run.
+migrate_probe() {
     (
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
+        printf '%b\n' "$1" > "$tmp/Brewfile"
+        export INSTALLED="$2" FAILING=" ${3:-} "
+        brew() {
+            if [[ "$1" == "list" ]]; then printf '%s\n' "$INSTALLED"; return 0; fi
+            echo "$*" >> "$tmp/calls"
+            [[ "$FAILING" != *" $1 "* ]]
+        }
+        set -e
+        migrate_superseded_packages "$tmp/Brewfile"
+        echo "returned" >> "$tmp/calls"
+        tr '\n' '|' < "$tmp/calls"
+    )
+}
+DEV_LINES='brew "tlrc"\nbrew "oh-my-posh"'
+check "migrate: an old tldr keg is unlinked when the Brewfile wants tlrc" \
+    "$(migrate_probe "$DEV_LINES" $'git\ntldr')" "unlink tldr|returned|"
+check "migrate: a tldr keg from a tap is unlinked too" \
+    "$(migrate_probe "$DEV_LINES" 'someone/tap/tldr')" "unlink tldr|returned|"
+check "migrate: no tldr keg, nothing to do" \
+    "$(migrate_probe "$DEV_LINES" $'git\ntlrc\noh-my-posh')" "returned|"
+check "migrate: a Brewfile without tlrc leaves tldr alone" \
+    "$(migrate_probe 'brew "git"' 'tldr')" "returned|"
+check "migrate: a failed unlink warns and continues" \
+    "$(migrate_probe "$DEV_LINES" 'tldr' 'unlink')" "unlink tldr|returned|"
+check "migrate: oh-my-posh from the old tap is replaced by homebrew-core's" \
+    "$(migrate_probe "$DEV_LINES" 'jandedobbeleer/oh-my-posh/oh-my-posh')" \
+    "fetch --formula homebrew/core/oh-my-posh|uninstall --formula oh-my-posh|install --formula homebrew/core/oh-my-posh|returned|"
+check "migrate: a failed download keeps the tap's oh-my-posh installed" \
+    "$(migrate_probe "$DEV_LINES" 'jandedobbeleer/oh-my-posh/oh-my-posh' 'fetch')" \
+    "fetch --formula homebrew/core/oh-my-posh|returned|"
+check "migrate: a failed uninstall stops before installing" \
+    "$(migrate_probe "$DEV_LINES" 'jandedobbeleer/oh-my-posh/oh-my-posh' 'uninstall')" \
+    "fetch --formula homebrew/core/oh-my-posh|uninstall --formula oh-my-posh|returned|"
+check "migrate: oh-my-posh already from homebrew-core is left alone" \
+    "$(migrate_probe "$DEV_LINES" 'oh-my-posh')" "returned|"
+check "migrate: a Brewfile without oh-my-posh leaves the tap's copy alone" \
+    "$(migrate_probe 'brew "git"' 'jandedobbeleer/oh-my-posh/oh-my-posh')" "returned|"
+
+# ---------------------------------------------------------------------------
+# parse_cleanup_preview / cleanup_packages
+# ---------------------------------------------------------------------------
+# A preview in the format Homebrew prints when stdout is not a terminal.
+PREVIEW_FULL=$'Would uninstall casks:\nfont-x\nWould uninstall formulae:\nfoo\nuser/tap/bar\nWould untap:\njandedobbeleer/oh-my-posh\nWould `brew cleanup`:\nWould remove: /cache/foo--1.0.bottle.tar.gz (1.2MB)\nRun `brew bundle cleanup --force` to make these changes.'
+check "parse_cleanup_preview: reads the casks, formulae and taps sections" \
+    "$(parse_cleanup_preview "$PREVIEW_FULL" | tr '\n' '|')" \
+    "cask font-x|formula foo|formula user/tap/bar|tap jandedobbeleer/oh-my-posh|"
+check "parse_cleanup_preview: terminal-style columns are split into names" \
+    "$(parse_cleanup_preview $'Would uninstall formulae:\nfoo   bar' | tr '\n' '|')" "formula foo|formula bar|"
+check "parse_cleanup_preview: other sections and the hint are skipped" \
+    "$(parse_cleanup_preview $'Would uninstall npm packages:\nleftpad\nWould `brew cleanup`:\nWould remove: /x (1MB)\nRun `brew bundle cleanup --force` to make these changes.'; echo "rc=$?")" "rc=0"
+check "parse_cleanup_preview: a non-name inside a known section fails" \
+    "$(parse_cleanup_preview $'Would uninstall formulae:\nError: No available formula'; echo "rc=$?")" "rc=1"
+
+# $1 = CLEANUP, $2 = preview stdout, $3 = preview stderr, $4 = preview exit
+# status, $5 = exit status of the forced cleanup. Runs under set -e and prints
+# the brew calls, the logged list lines, STATUS_CLEANUP and "returned".
+cleanup_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        WORKDIR="$tmp"
         BREWFILE=Brewfile-minimal
         BREWFILE_PATH=/x/Brewfile-minimal
         CLEANUP="$1"
-        PREVIEW="$2"
+        export PREVIEW="$2" PREVIEW_ERR="$3" PREVIEW_RC="${4:-0}" FORCE_RC="${5:-0}"
+        log() { echo "$*" >> "$tmp/log"; }
         brew() {
             case "$*" in
-                *--force*) echo force >> "$tmp/calls" ;;
-                *) echo preview >> "$tmp/calls"; printf '%s' "$PREVIEW" ;;
+                *--force*) echo "force" >> "$tmp/calls"; return "$FORCE_RC" ;;
+                *) echo "preview: $*" >> "$tmp/calls"
+                   printf '%s' "$PREVIEW"; printf '%s' "$PREVIEW_ERR" >&2
+                   return "$PREVIEW_RC" ;;
             esac
         }
+        set -e
         cleanup_packages
-        tr '\n' ' ' < "$tmp/calls"
+        {
+            cat "$tmp/calls"
+            grep '^  ' "$tmp/log" || true
+            echo "status=$STATUS_CLEANUP"
+            echo "returned"
+        } | tr '\n' '|'
     )
 }
-check "cleanup_packages: empty preview means nothing to do (no removal)" \
-    "$(cleanup_probe remove '')" "preview "
-check "cleanup_packages: CLEANUP=remove removes after the preview" \
-    "$(cleanup_probe remove 'Would uninstall formulae: foo')" "preview force "
-check "cleanup_packages: CLEANUP=skip keeps everything" \
-    "$(cleanup_probe skip 'Would uninstall formulae: foo')" "preview "
-check "cleanup_packages: no tty and no preference keeps everything" \
-    "$(cleanup_probe '' 'Would uninstall formulae: foo')" "preview "
+ONE_FORMULA=$'Would uninstall formulae:\nfoo\nRun `brew bundle cleanup --force` to make these changes.'
+check "cleanup: the preview is limited to formulae, casks and taps" \
+    "$(cleanup_probe skip '' '' 0 | cut -d'|' -f1)" \
+    "preview: bundle cleanup --file=/x/Brewfile-minimal --formula --cask --tap"
+check "cleanup: an empty preview means nothing to do" \
+    "$(cleanup_probe remove '' '' 0 | cut -d'|' -f2-)" "status=none|returned|"
+check "cleanup: CLEANUP=remove removes after the preview" \
+    "$(cleanup_probe remove "$ONE_FORMULA" '' 1 0 | cut -d'|' -f2-)" "force|  formula: foo|status=removed|returned|"
+check "cleanup: a failed removal is reported, not fatal" \
+    "$(cleanup_probe remove "$ONE_FORMULA" '' 1 1 | cut -d'|' -f2-)" "force|  formula: foo|status=failed|returned|"
+check "cleanup: CLEANUP=skip keeps everything" \
+    "$(cleanup_probe skip "$ONE_FORMULA" '' 1 | cut -d'|' -f2-)" "  formula: foo|status=kept|returned|"
+check "cleanup: no tty and no preference keeps everything" \
+    "$(cleanup_probe '' "$ONE_FORMULA" '' 1 | cut -d'|' -f2-)" "  formula: foo|status=kept|returned|"
+check "cleanup: stderr progress and warnings are never listed as packages" \
+    "$(cleanup_probe skip $'Would untap:\njandedobbeleer/oh-my-posh' $'==> Downloading Homebrew API data\nWarning: Skipping oh-my-posh: tap formula is not trusted\n' 1 | cut -d'|' -f2-)" \
+    "  tap: jandedobbeleer/oh-my-posh|status=kept|returned|"
+check "cleanup: a Homebrew error with nothing listed removes nothing" \
+    "$(cleanup_probe remove '' $'Error: No available formula with the name "tldr".\n' 1 | cut -d'|' -f2-)" \
+    "  Error: No available formula with the name \"tldr\".|status=unreadable|returned|"
+check "cleanup: an unreadable preview removes nothing" \
+    "$(cleanup_probe remove $'Would uninstall formulae:\n!!garbage' '' 1 | cut -d'|' -f2-)" \
+    "  Would uninstall formulae:|  !!garbage|status=unreadable|returned|"
+check "cleanup: only a 'brew cleanup' section means nothing to remove" \
+    "$(cleanup_probe remove $'Would `brew cleanup`:\nWould remove: /x (1MB)\nRun `brew bundle cleanup --force` to make these changes.' '' 0 | cut -d'|' -f2-)" \
+    "status=none|returned|"
+check "cleanup: the forced removal cannot read the terminal (no second prompt)" \
+    "$(grep -c 'brew_bundle_cleanup --force </dev/null' "$BOOTSTRAP")" "1"
 
 # ---------------------------------------------------------------------------
 # install_tflint_linux (network, unzip and install are stubbed)
