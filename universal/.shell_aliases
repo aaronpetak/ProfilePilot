@@ -43,6 +43,9 @@ alias cp='cp -i'
 ###############################################################################
 # Git (only if git is installed)
 ###############################################################################
+# An older alias named get would be expanded while the function below is parsed
+# (breaking its definition), so remove it before the guarded block is read.
+unalias get 2>/dev/null
 if command -v git >/dev/null 2>&1; then
     # Most commonly used
     alias gco='git checkout'
@@ -57,11 +60,28 @@ if command -v git >/dev/null 2>&1; then
     alias grc='git rebase --continue'
     alias grs='git rebase --skip'
     alias gsb='git branch --verbose'
-    alias get='git pull origin master'
     alias recommit='git commit --amend --no-edit'
     alias uncommit='git reset --soft HEAD~1'
     alias unstage='git reset HEAD --'
     alias yeet='git push origin HEAD'
+
+    # Pull origin's default branch, whatever it is called. origin/HEAD is
+    # normally set by `git clone`; when it is missing (e.g. a repo made with
+    # `git init` + `git remote add`), ask the remote once to set it. Extra
+    # arguments are passed to `git pull`.
+    get() {
+        local b
+        b=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
+        if [ -z "$b" ]; then
+            git remote set-head origin --auto >/dev/null 2>&1
+            b=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
+        fi
+        if [ -z "$b" ]; then
+            echo "get: cannot determine origin's default branch (is there an origin remote?)." >&2
+            return 1
+        fi
+        git pull origin "${b#origin/}" "$@"
+    }
 fi
 
 ###############################################################################
