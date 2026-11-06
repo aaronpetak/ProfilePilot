@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Fast, deterministic unit tests for the pure helper functions in bootstrap.sh.
+# Fast, deterministic unit tests for bootstrap.sh and the shipped dotfiles.
 #
-# bootstrap.sh interleaves top-level provisioning code with its function
-# definitions and has no `main`/sourcing guard, so we cannot simply `source` it
-# without triggering a real install. Instead each test extracts just the
-# function(s) under test by name-range with sed and evaluates them in a
-# subshell with log()/fatal() stubbed. This is the same isolation technique the
-# functions were developed under; it needs no network, no Homebrew, and no TTY.
+# bootstrap.sh only defines functions when sourced (main runs only when the file
+# is executed), so the tests source it and call the helpers directly. Nothing
+# here needs network, Homebrew, or a TTY: log and tty_available are stubbed, and
+# anything that touches files runs in a subshell against a mktemp -d HOME.
 #
 # Exits non-zero if any assertion fails, so CI can gate on it.
+# Variables assigned here are read by the sourced bootstrap.sh functions; the
+# linter cannot see across the source, hence this file-wide disable.
+# shellcheck disable=SC2034
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,11 +18,20 @@ BOOTSTRAP="$SCRIPT_DIR/../bootstrap.sh"
 pass=0
 fail=0
 
-# Extract a function definition (from `name() {` to its closing `}` at column 0)
-# out of bootstrap.sh so it can be evaluated in isolation.
-extract_fn() {
-    sed -n "/^$1() {/,/^}/p" "$BOOTSTRAP"
-}
+# shellcheck source=../bootstrap.sh
+source "$BOOTSTRAP"
+
+# Keep the caller's environment from steering the code under test.
+unset PROFILE SKIP_CLEANUP GIT_NAME GIT_EMAIL
+DOTFILES_CONFLICT=""
+CLEANUP=""
+
+# Keep the real log() for the few tests of its behavior, then stub it so no test
+# writes a log file or prints. No test may ever open /dev/tty.
+REAL_LOG_DEF="$(declare -f log)"
+log() { :; }
+fatal() { echo "FATAL: $*"; exit 1; }
+tty_available() { return 1; }
 
 check() {
     local label="$1" got="$2" want="$3"
@@ -35,10 +45,8 @@ check() {
 }
 
 # ---------------------------------------------------------------------------
-# shell_for_os / shell_files_for  (PR #1: dotfile shell follows OS)
+# shell_for_os / shell_files_for  (the dotfile shell follows the OS)
 # ---------------------------------------------------------------------------
-eval "$(extract_fn shell_for_os)"
-eval "$(extract_fn shell_files_for)"
 
 check "shell_for_os macos"       "$(shell_for_os macos)"                          "zsh"
 check "shell_for_os linux"       "$(shell_for_os linux)"                          "bash"
@@ -47,9 +55,8 @@ check "files for linux shell"    "$(shell_files_for "$(shell_for_os linux)")"   
 check "files for unknown shell"  "$(shell_files_for fish)"                        ""
 
 # ---------------------------------------------------------------------------
-# brewfile_for_profile  (PR #2: non-interactive PROFILE selection)
+# brewfile_for_profile  (non-interactive PROFILE selection)
 # ---------------------------------------------------------------------------
-eval "$(extract_fn brewfile_for_profile)"
 
 check "profile developer"        "$(brewfile_for_profile developer)"              "Brewfile-developer"
 check "profile minimal"          "$(brewfile_for_profile minimal)"                "Brewfile-minimal"
@@ -57,7 +64,7 @@ check "profile unknown"          "$(brewfile_for_profile bastion)"              
 check "profile empty"            "$(brewfile_for_profile '')"                     ""
 
 # ---------------------------------------------------------------------------
-# print_summary exit code  (PR #3: honest end-of-run summary)
+# print_summary exit code  (honest end-of-run summary)
 # Only unresolved package failures should flip the exit code; kept dotfiles and
 # an un-personalized gitconfig are legitimate states that must NOT fail the run.
 # ---------------------------------------------------------------------------
@@ -65,15 +72,13 @@ summary_rc() {
     local pkg="$1" dot="$2" git="$3"
     (
         log() { :; }
-        # These are read by the eval'd print_summary below; shellcheck can't see
-        # through the eval, hence the disable.
+        # Read by print_summary; shellcheck cannot see across the sourced file.
         # shellcheck disable=SC2034
         STATUS_PACKAGES="$pkg"
         # shellcheck disable=SC2034
         STATUS_DOTFILES="$dot"
         # shellcheck disable=SC2034
         STATUS_GITCONFIG="$git"
-        eval "$(extract_fn print_summary)"
         print_summary >/dev/null 2>&1
     )
     echo "$?"
@@ -224,10 +229,6 @@ identity_env() {
         tty_available() { return 1; }
         # shellcheck disable=SC2034  # read by the eval-ed helpers.
         STATUS_GITCONFIG="unknown"
-        eval "$(extract_fn is_identity_placeholder)"
-        eval "$(extract_fn migrate_gitconfig_identity)"
-        eval "$(extract_fn verify_git_identity)"
-        eval "$(extract_fn personalize_gitconfig)"
         cp "$GITCONFIG_SRC" "$HOME/.gitconfig"
         eval "$1"
     )
@@ -297,7 +298,6 @@ brew_probe() {
     (
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        eval "$(extract_fn find_brew_prefix)"
         brew_prefix_candidates() { echo "$tmp/a"; echo "$tmp/b"; echo "$tmp/c"; }
         eval "$1"
         find_brew_prefix | sed "s#$tmp#TMP#"
@@ -312,7 +312,7 @@ check "find_brew_prefix: picks the first candidate with brew" \
 check "find_brew_prefix: ignores a non-executable brew" \
     "$(brew_probe 'mkdir -p "$tmp/a/bin"; touch "$tmp/a/bin/brew"' | tr '\n' ' ')" "rc=1 "
 check "brew_prefix_candidates lists the four known prefixes" \
-    "$( (HOME=/h; eval "$(extract_fn brew_prefix_candidates)"; brew_prefix_candidates | tr '\n' ' ') )" \
+    "$( (HOME=/h; brew_prefix_candidates | tr '\n' ' ') )" \
     "/opt/homebrew /usr/local /home/linuxbrew/.linuxbrew /h/.linuxbrew "
 
 # ---------------------------------------------------------------------------
@@ -328,10 +328,6 @@ brew_wiring() {
         printf '#!/bin/sh\necho "export WIRED=1"\n' > "$tmp/prefix/bin/brew"
         chmod +x "$tmp/prefix/bin/brew"
         log() { echo "LOG: $*"; }
-        eval "$(extract_fn append_line_once)"
-        eval "$(extract_fn setup_brew_path)"
-        eval "$(extract_fn ensure_zprofile_brew)"
-        eval "$(extract_fn warn_stale_brew_lines)"
         eval "$1" 2>&1 | sed "s#$tmp#TMP#g"
     )
 }
@@ -370,7 +366,6 @@ lc_probe() {
     (
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        eval "$(extract_fn local_checkout_dir)"
         eval "$1" | sed "s#$tmp#TMP#g"
         echo "rc=${PIPESTATUS[0]}"
     )
@@ -385,7 +380,7 @@ check "local_checkout_dir: dir without universal/brewfiles -> tarball mode" \
 check "local_checkout_dir: clone with universal/brewfiles -> local mode" \
     "$(lc_probe 'mkdir -p "$tmp/clone/universal/brewfiles"; local_checkout_dir "$tmp/clone/bootstrap.sh"' | tr '\n' ' ')" "TMP/clone rc=0 "
 check "local_checkout_dir: the real repo is recognised as a checkout" \
-    "$( (eval "$(extract_fn local_checkout_dir)"; local_checkout_dir "$BOOTSTRAP" >/dev/null && echo local) )" "local"
+    "$( (local_checkout_dir "$BOOTSTRAP" >/dev/null && echo local) )" "local"
 
 # unpack_source_tarball: build a codeload-style tarball (single top-level dir
 # with an unpredictable name) and unpack it without knowing that name.
@@ -395,7 +390,6 @@ tarball_probe() {
         trap 'rm -rf "$tmp"' EXIT
         log() { :; }
         fatal() { echo "FATAL"; exit 1; }
-        eval "$(extract_fn unpack_source_tarball)"
         mkdir -p "$tmp/src/ProfilePilot-abc123/universal/brewfiles"
         eval "$1"
         unpack_source_tarball "$tmp/t.tar.gz" "$tmp/out" 2>/dev/null
@@ -427,7 +421,6 @@ pkg_probe() {
     (
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        eval "$(extract_fn missing_linux_packages)"
         for c in $1; do printf '#!/bin/sh\n' > "$tmp/$c"; chmod +x "$tmp/$c"; done
         shift
         # Only the fake commands are on PATH while the function runs; the
@@ -470,7 +463,6 @@ if command -v sha256sum >/dev/null 2>&1; then
         (
             tmp="$(mktemp -d)"
             trap 'rm -rf "$tmp"' EXIT
-            eval "$(extract_fn verify_release_checksum)"
             printf 'payload' > "$tmp/tflint_linux_amd64.zip"
             printf 'other' > "$tmp/tflint_linux_arm64.zip"
             # shellcheck disable=SC2034  # used by the eval-ed snippet.
@@ -496,7 +488,6 @@ fi
 # resolve_latest_release_tag with a stub curl that prints a fixed effective URL.
 tag_probe() {
     (
-        eval "$(extract_fn resolve_latest_release_tag)"
         curl() { printf '%s' "$1"; }
         eval "$2"
         resolve_latest_release_tag terraform-linters/tflint && true
@@ -554,6 +545,256 @@ check "piped script reaches the root guard (stubbed id reports root)" \
 # no workspace created.
 check "sourcing bootstrap.sh runs nothing and leaks no set -e" \
     "$(bash -c 'source "$1"; echo "out:[$-]:${WORKDIR:-none}"' _ "$BOOTSTRAP" | sed 's/\[[^e]*\]/[no-e]/')" "out:[no-e]:none"
+
+# ---------------------------------------------------------------------------
+# items_identical
+# ---------------------------------------------------------------------------
+ident_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        eval "$1"
+        items_identical "$tmp/src" "$tmp/dest" && echo same || echo different
+    )
+}
+
+check "items_identical: identical files" \
+    "$(ident_probe 'echo a > "$tmp/src"; echo a > "$tmp/dest"')" "same"
+check "items_identical: different files" \
+    "$(ident_probe 'echo a > "$tmp/src"; echo b > "$tmp/dest"')" "different"
+check "items_identical: identical directories" \
+    "$(ident_probe 'mkdir -p "$tmp/src/d" "$tmp/dest/d"; echo a > "$tmp/src/d/f"; echo a > "$tmp/dest/d/f"')" "same"
+check "items_identical: directories with different content" \
+    "$(ident_probe 'mkdir "$tmp/src" "$tmp/dest"; echo a > "$tmp/src/f"; echo b > "$tmp/dest/f"')" "different"
+check "items_identical: directories with an extra file" \
+    "$(ident_probe 'mkdir "$tmp/src" "$tmp/dest"; echo a > "$tmp/src/f"; echo a > "$tmp/dest/f"; echo x > "$tmp/dest/g"')" "different"
+check "items_identical: file source vs directory destination" \
+    "$(ident_probe 'echo a > "$tmp/src"; mkdir "$tmp/dest"')" "different"
+check "items_identical: directory source vs file destination" \
+    "$(ident_probe 'mkdir "$tmp/src"; echo a > "$tmp/dest"')" "different"
+check "items_identical: missing destination" \
+    "$(ident_probe 'echo a > "$tmp/src"')" "different"
+
+# ---------------------------------------------------------------------------
+# determine_conflict_mode / determine_cleanup_mode (no TTY available)
+# ---------------------------------------------------------------------------
+conflict_mode_for() {
+    ( DOTFILES_CONFLICT="$1"; determine_conflict_mode; echo "$CONFLICT_MODE" )
+}
+check "conflict mode: overwrite"                   "$(conflict_mode_for overwrite)" "overwrite"
+check "conflict mode: skip"                        "$(conflict_mode_for skip)"      "skip"
+check "conflict mode: prompt without a tty -> skip" "$(conflict_mode_for prompt)"   "skip"
+check "conflict mode: unset without a tty -> skip" "$(conflict_mode_for '')"        "skip"
+check "conflict mode: unknown value -> skip"       "$(conflict_mode_for bogus)"     "skip"
+
+cleanup_mode_for() {
+    ( CLEANUP="$1"; if [[ -n "${2:-}" ]]; then SKIP_CLEANUP="$2"; fi; determine_cleanup_mode; echo "$CLEANUP_MODE" )
+}
+check "cleanup mode: remove"                        "$(cleanup_mode_for remove)"     "remove"
+check "cleanup mode: skip"                          "$(cleanup_mode_for skip)"       "skip"
+check "cleanup mode: prompt without a tty -> skip"  "$(cleanup_mode_for prompt)"     "skip"
+check "cleanup mode: unset without a tty -> skip"   "$(cleanup_mode_for '')"         "skip"
+check "cleanup mode: unknown value -> skip"         "$(cleanup_mode_for bogus)"      "skip"
+check "cleanup mode: SKIP_CLEANUP alias -> skip"    "$(cleanup_mode_for '' 1)"       "skip"
+check "cleanup mode: CLEANUP=remove beats SKIP_CLEANUP" "$(cleanup_mode_for remove 1)" "remove"
+
+# ---------------------------------------------------------------------------
+# npm_package_owning
+# ---------------------------------------------------------------------------
+npm_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        eval "$1"
+        npm_package_owning "$tmp/bin/tool"
+    )
+}
+check "npm_package_owning: scoped package" \
+    "$(npm_probe 'mkdir "$tmp/bin"; ln -s ../lib/node_modules/@fresh-editor/fresh-editor/run.js "$tmp/bin/tool"')" "@fresh-editor/fresh-editor"
+check "npm_package_owning: unscoped package" \
+    "$(npm_probe 'mkdir "$tmp/bin"; ln -s ../lib/node_modules/left-pad/cli.js "$tmp/bin/tool"')" "left-pad"
+check "npm_package_owning: symlink outside node_modules" \
+    "$(npm_probe 'mkdir "$tmp/bin"; ln -s /usr/bin/true "$tmp/bin/tool"')" ""
+check "npm_package_owning: regular file" \
+    "$(npm_probe 'mkdir "$tmp/bin"; echo hi > "$tmp/bin/tool"')" ""
+check "npm_package_owning: missing path" \
+    "$(npm_probe 'mkdir "$tmp/bin"')" ""
+
+# ---------------------------------------------------------------------------
+# detect_os / init_logging / log / prepare_workspace
+# ---------------------------------------------------------------------------
+os_probe() {
+    ( OSTYPE="$1"; detect_os; echo "$OS_TYPE $OS_DOTFILES_DIR" )
+}
+check "detect_os: darwin"            "$(os_probe darwin24.1)"  "macos macos"
+check "detect_os: linux-gnu"         "$(os_probe linux-gnu)"   "linux linux"
+check "detect_os: bare linux (SUSE)" "$(os_probe linux)"       "linux linux"
+check "detect_os: linux-musl is fatal" "$(os_probe linux-musl | head -n1 | cut -c1-33)" "FATAL: Unsupported OS: linux-musl"
+check "detect_os: unknown OS is fatal" "$(os_probe freebsd14)" "FATAL: Unsupported OS: freebsd14"
+
+logdir_probe() {
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        HOME="$tmp/home"
+        OSTYPE="$1"
+        init_logging
+        echo "${LOGFILE#"$tmp"/} $(test -d "$(dirname "$LOGFILE")" && echo dir-exists)"
+    )
+}
+check "init_logging: Linux log under ~/.local/state" \
+    "$(logdir_probe linux-gnu)" "home/.local/state/homebrew-restore.log dir-exists"
+check "init_logging: macOS log under ~/Library/Logs" \
+    "$(logdir_probe darwin24)" "home/Library/Logs/homebrew-restore.log dir-exists"
+
+check "log with no LOGFILE prints to stdout only" \
+    "$( (eval "$REAL_LOG_DEF"; LOGFILE=""; log hello) | sed 's/^\[[^]]*\] //')" "hello"
+check "log appends to LOGFILE when set" \
+    "$( (tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; eval "$REAL_LOG_DEF"; LOGFILE="$tmp/l"; log hello >/dev/null; sed 's/^\[[^]]*\] //' "$tmp/l") )" "hello"
+
+workspace_probe() {
+    (
+        prepare_workspace
+        ls -ld "$WORKDIR" | cut -c1-10
+        echo "$WORKDIR" > "$1"
+    )
+}
+ws_file="$(mktemp)"
+check "prepare_workspace creates a private (0700) directory" "$(workspace_probe "$ws_file")" "drwx------"
+check "prepare_workspace never assigns TMPDIR" "$( (unset TMPDIR; prepare_workspace; echo "${TMPDIR:-unset}") )" "unset"
+check "the workspace is removed when the shell exits" \
+    "$(test -e "$(cat "$ws_file")" && echo present || echo removed)" "removed"
+rm -f "$ws_file"
+
+# ---------------------------------------------------------------------------
+# select_profile / resolve_source / install_packages / cleanup_packages
+# ---------------------------------------------------------------------------
+check "select_profile: PROFILE=developer" \
+    "$( (PROFILE=developer; select_profile; echo "$BREWFILE") )" "Brewfile-developer"
+check "select_profile: PROFILE=minimal" \
+    "$( (PROFILE=minimal; select_profile; echo "$BREWFILE") )" "Brewfile-minimal"
+check "select_profile: invalid PROFILE is fatal" \
+    "$( (PROFILE=bastion; select_profile) )" "FATAL: Invalid PROFILE='bastion' (expected: developer or minimal)."
+check "select_profile: no PROFILE and no tty is fatal" \
+    "$( (select_profile) | cut -c1-39)" "FATAL: No profile selected and no inter"
+
+check "resolve_source: the real checkout is used in local mode" \
+    "$( (BOOTSTRAP_SCRIPT="$BOOTSTRAP"; BREWFILE=Brewfile-minimal; OS_TYPE=macos
+         fetch_source_tarball() { echo "unexpected fetch"; }
+         resolve_source; echo "$([[ "$SOURCE_DIR" == "$(cd "$SCRIPT_DIR/.." && pwd)" ]] && echo repo) ${BREWFILE_PATH##*/}") )" "repo Brewfile-minimal"
+source_probe() {
+    # $1 = with-brewfile | without-brewfile
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        WORKDIR="$tmp/w"
+        BOOTSTRAP_SCRIPT=""     # piped: not a checkout
+        OS_TYPE=macos           # skips the Linux package step
+        BREWFILE=Brewfile-minimal
+        MODE="$1"
+        fetch_source_tarball() {
+            echo "fetch -> ${1#"$tmp"/}"
+            mkdir -p "$1/universal/brewfiles"
+            if [[ "$MODE" == with-brewfile ]]; then touch "$1/universal/brewfiles/Brewfile-minimal"; fi
+        }
+        resolve_source
+        echo "path -> ${BREWFILE_PATH#"$tmp"/}"
+    )
+}
+check "resolve_source: piped script downloads the tarball into the workspace" \
+    "$(source_probe with-brewfile | tr '\n' ' ')" "fetch -> w/source path -> w/source/universal/brewfiles/Brewfile-minimal "
+check "resolve_source: a Brewfile missing from the source is fatal" \
+    "$(source_probe without-brewfile | tail -n1 | cut -c1-22)" "FATAL: Brewfile not fo"
+
+# brew stub that records its arguments, one call per line.
+packages_probe() {
+    (
+        OS_TYPE=macos
+        BREWFILE="$1"
+        BREWFILE_PATH="/x/$1"
+        calls=""
+        brew() { calls="$calls brew:$1"; [[ "$1" != "update" ]] || return 1; }
+        install_brewfile_packages() { calls="$calls bundle"; }
+        install_tflint_linux() { calls="$calls tflint"; }
+        log() { case "$*" in *"brew update failed"*) calls="$calls warned";; esac; }
+        install_packages
+        echo "$calls"
+    )
+}
+check "install_packages: a failed brew update warns and continues (developer)" \
+    "$(packages_probe Brewfile-developer)" " brew:update warned bundle tflint"
+check "install_packages: tflint is only for the developer profile" \
+    "$(packages_probe Brewfile-minimal)" " brew:update warned bundle"
+
+cleanup_probe() {
+    # $1 = CLEANUP value, $2 = preview text brew prints. brew runs inside a
+    # command substitution for the preview, so calls are recorded in a file.
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        BREWFILE=Brewfile-minimal
+        BREWFILE_PATH=/x/Brewfile-minimal
+        CLEANUP="$1"
+        PREVIEW="$2"
+        brew() {
+            case "$*" in
+                *--force*) echo force >> "$tmp/calls" ;;
+                *) echo preview >> "$tmp/calls"; printf '%s' "$PREVIEW" ;;
+            esac
+        }
+        cleanup_packages
+        tr '\n' ' ' < "$tmp/calls"
+    )
+}
+check "cleanup_packages: empty preview means nothing to do (no removal)" \
+    "$(cleanup_probe remove '')" "preview "
+check "cleanup_packages: CLEANUP=remove removes after the preview" \
+    "$(cleanup_probe remove 'Would uninstall formulae: foo')" "preview force "
+check "cleanup_packages: CLEANUP=skip keeps everything" \
+    "$(cleanup_probe skip 'Would uninstall formulae: foo')" "preview "
+check "cleanup_packages: no tty and no preference keeps everything" \
+    "$(cleanup_probe '' 'Would uninstall formulae: foo')" "preview "
+
+# ---------------------------------------------------------------------------
+# install_tflint_linux (network, unzip and install are stubbed)
+# ---------------------------------------------------------------------------
+tflint_probe() {
+    # $1 = scenario setup, run inside the subshell after the common stubs.
+    (
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        WORKDIR="$tmp/work"; mkdir -p "$WORKDIR" "$tmp/prefix/bin"
+        OS_TYPE=linux
+        STATUS_PACKAGES="ok"
+        urls=""
+        uname() { echo x86_64; }
+        # Pretend tflint is not installed, whatever the host has.
+        command() { if [[ "${1:-}" == "-v" && "${2:-}" == "tflint" ]]; then return 1; fi; builtin command "$@"; }
+        find_brew_prefix() { echo "$tmp/prefix"; }
+        resolve_latest_release_tag() { echo v9.9.9; }
+        curl() { urls="$urls ${4##*/}@$(basename "$(dirname "$4")")"; echo data > "$3"; }
+        unzip() { mkdir -p "$5"; echo bin > "$5/tflint"; }
+        verify_release_checksum() { return 0; }
+        eval "$1"
+        install_tflint_linux
+        echo "status=$STATUS_PACKAGES installed=$(test -x "$tmp/prefix/bin/tflint" && echo yes || echo no)"
+        echo "urls=$urls"
+    )
+}
+check "install_tflint_linux: success installs from the resolved tag" \
+    "$(tflint_probe ':' | tr '\n' ' ')" "status=ok installed=yes urls= tflint_linux_amd64.zip@v9.9.9 checksums.txt@v9.9.9 "
+check "install_tflint_linux: unresolvable tag -> skip and mark incomplete" \
+    "$(tflint_probe 'resolve_latest_release_tag() { return 1; }' | head -n1)" "status=incomplete installed=no"
+check "install_tflint_linux: download failure -> skip and mark incomplete" \
+    "$(tflint_probe 'curl() { return 22; }' | head -n1)" "status=incomplete installed=no"
+check "install_tflint_linux: checksum mismatch -> not installed, marked incomplete" \
+    "$(tflint_probe 'verify_release_checksum() { return 1; }' | head -n1)" "status=incomplete installed=no"
+check "install_tflint_linux: unzip failure -> skip and mark incomplete" \
+    "$(tflint_probe 'unzip() { return 1; }' | head -n1)" "status=incomplete installed=no"
+check "install_tflint_linux: install failure -> mark incomplete" \
+    "$(tflint_probe 'install() { return 1; }' | head -n1)" "status=incomplete installed=no"
+check "install_tflint_linux: not touched on macOS" \
+    "$(tflint_probe 'OS_TYPE=macos' | head -n1)" "status=ok installed=no"
 
 # ---------------------------------------------------------------------------
 # Summary
