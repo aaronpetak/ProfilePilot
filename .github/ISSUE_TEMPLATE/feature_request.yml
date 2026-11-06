@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a package, profile, dotfile setting or bootstrap.sh behavior.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that ProfilePilot does not handle today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should change? For a new package, say which profile and whether it works on both macOS and Linux.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
