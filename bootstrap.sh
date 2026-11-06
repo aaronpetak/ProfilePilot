@@ -1085,7 +1085,10 @@ apply_dotfiles() {
         src="$profile_dir/$item"
         dest="$HOME/$item"
         [[ -e "$src" ]] || continue
-        if [[ ! -e "$dest" ]]; then
+        # A dangling symlink is not -e but is still occupying the path: treat
+        # it as an existing item so it is handled as a conflict (backup_and_install
+        # moves the link itself), never installed over.
+        if [[ ! -e "$dest" && ! -L "$dest" ]]; then
             install_item "$src" "$dest"
         elif items_identical "$src" "$dest"; then
             log "$item already matches the profile; leaving it unchanged."
