@@ -4,18 +4,6 @@ All notable changes to ProfilePilot are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
-### Fixed
-
-- Cleanup no longer touches global npm, go, cargo and uv packages, VS Code extensions or other bundle extensions. Before, choosing "Remove" uninstalled any of them that the Brewfile did not list.
-- The cleanup list no longer shows Homebrew progress messages and warnings as packages to remove. A preview that cannot be read now removes nothing.
-- A failed cleanup no longer stops the run before the summary, and removing a tap no longer asks a second question about packages that were not on the list.
-- Machines with the old `tldr` package no longer end every developer-profile run as FAILED: `tldr` is unlinked so `tlrc` can provide the `tldr` command.
-- oh-my-posh installed from the old `jandedobbeleer/oh-my-posh` tap is replaced with homebrew-core's. Before, it was never upgraded, and cleanup could not remove the tap.
-
-### Added
-
-- The summary reports the cleanup outcome, and says how to get `brew` in your current terminal when the run had to add it to `PATH`.
-
 ## [0.1.0] - 2026-11-05
 
 First tagged release.
@@ -30,8 +18,9 @@ First tagged release.
 - Git identity is written to `~/.gitconfig.local`, which the shipped `~/.gitconfig` includes, so re-applying a profile never overwrites it.
 - Homebrew detection across all four standard prefixes, `brew bundle` retries, and handling for formulae blocked by global npm packages.
 - tflint on Linux is installed from its GitHub release and verified against the published checksums.
-- Opt-in removal of Homebrew packages that are not in the selected Brewfile.
-- An end-of-run summary that reports packages, dotfiles and git identity separately, with a non-zero exit status when any step is incomplete.
+- Opt-in removal of Homebrew formulae, casks and taps that are not in the selected Brewfile. It never touches global npm, go, cargo or uv packages or VS Code extensions, and it removes nothing if Homebrew's preview cannot be read. A failed removal is reported instead of stopping the run.
+- Upgrades from earlier installs: an old `tldr` package is unlinked so `tlrc` can provide the `tldr` command, and oh-my-posh from the old `jandedobbeleer/oh-my-posh` tap is replaced with homebrew-core's.
+- An end-of-run summary that reports packages, dotfiles, git identity and cleanup separately, and exits non-zero when packages fail to install. When the run had to add `brew` to `PATH`, it also says how to get `brew` in your current terminal.
 - CI: shellcheck and syntax checks, logic tests on Ubuntu and on macOS's stock bash 3.2, and end-to-end smoke runs on Ubuntu, Fedora, Rocky Linux 8, Arch, openSUSE Tumbleweed and macOS.
 
 [Unreleased]: https://github.com/aaronpetak/ProfilePilot/compare/v0.1.0...HEAD
