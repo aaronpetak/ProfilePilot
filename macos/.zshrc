@@ -41,6 +41,24 @@ if [[ -f "$HOME/.local/bin/env" ]]; then
 fi
 
 ###############################################################################
+# Editor
+###############################################################################
+# Default editor, unless the environment already chose one: VS Code (waiting for
+# the file to close, so git commit and crontab -e pause correctly) when it is
+# installed and this is not an SSH session, otherwise vim, otherwise vi.
+if [ -z "${EDITOR:-}" ]; then
+    if command -v code >/dev/null 2>&1 && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${SSH_TTY:-}" ]; then
+        EDITOR="code --wait"
+    elif command -v vim >/dev/null 2>&1; then
+        EDITOR="vim"
+    else
+        EDITOR="vi"
+    fi
+fi
+export EDITOR
+export VISUAL="${VISUAL:-$EDITOR}"
+
+###############################################################################
 # Developer Add-on
 ###############################################################################
 # Oh My Posh, virtualenvwrapper, fzf and the editor are configured in
