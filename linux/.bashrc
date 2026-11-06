@@ -50,6 +50,30 @@ shopt -s checkwinsize
 # even when no prompt theme is configured.
 PS1='\u@\h:\w\$ '
 
+# Add the git branch to the prompt, but only if git's prompt helper exists:
+# __git_ps1 ships with git (or its bash completion), not with bash. Load it from
+# the first known location if it is not already defined.
+if ! type __git_ps1 >/dev/null 2>&1; then
+    for _git_prompt in \
+        "${HOMEBREW_PREFIX:-/nonexistent}/etc/bash_completion.d/git-prompt.sh" \
+        /usr/share/git-core/contrib/completion/git-prompt.sh \
+        /usr/lib/git-core/git-sh-prompt \
+        /etc/bash_completion.d/git-prompt \
+        /usr/share/git/completion/git-prompt.sh; do
+        if [ -r "$_git_prompt" ]; then
+            # shellcheck source=/dev/null
+            . "$_git_prompt"
+            break
+        fi
+    done
+    unset _git_prompt
+fi
+if type __git_ps1 >/dev/null 2>&1; then
+    # Single-quoted so the command substitution runs for every prompt instead of
+    # being evaluated once, here.
+    PS1='\u@\h:\w$(__git_ps1 " (%s)")\$ '
+fi
+
 # Load GNU dircolors so `ls --color` output is themed. The listing/grep aliases
 # themselves live in ~/.shell_aliases (single source of truth), not here.
 if [ -x /usr/bin/dircolors ]; then
