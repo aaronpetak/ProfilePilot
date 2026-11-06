@@ -1231,7 +1231,7 @@ repair_ca_certificates
 ###############################################################################
 
 log "Updating Homebrew..."
-brew update
+brew update || log "Warning: brew update failed; continuing with the package index already on this machine."
 
 # Install packages, retrying transient failures and continuing past any that
 # persist (see install_brewfile_packages). This intentionally never aborts the
